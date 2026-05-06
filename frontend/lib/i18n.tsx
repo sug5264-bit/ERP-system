@@ -5,7 +5,7 @@ export type Lang = "ko" | "en";
 
 const messages = {
   ko: {
-    "app.title": "ERP 시스템",
+    "app.title": "WellGreen ERP",
     "nav.dashboard": "대시보드",
     "nav.hr": "HR / 인사",
     "nav.finance": "재무 / 회계",
@@ -15,6 +15,8 @@ const messages = {
     "nav.reports": "예약 보고서",
     "nav.admin.users": "사용자 관리",
     "nav.admin.audit": "감사 로그",
+    "nav.admin.fields": "커스텀 필드",
+    "nav.admin.data": "백업 & 임포트",
     "common.add": "추가",
     "common.delete": "삭제",
     "common.save": "저장",
@@ -26,7 +28,7 @@ const messages = {
     "auth.email": "이메일",
     "auth.password": "비밀번호",
     "auth.login": "로그인",
-    "auth.login.title": "ERP 로그인",
+    "auth.login.title": "WellGreen ERP 로그인",
     "auth.logout": "로그아웃",
     "auth.role": "역할",
     "dashboard.summary": "요약",
@@ -42,7 +44,7 @@ const messages = {
     "lang.toggle": "EN",
   },
   en: {
-    "app.title": "ERP System",
+    "app.title": "WellGreen ERP",
     "nav.dashboard": "Dashboard",
     "nav.hr": "HR",
     "nav.finance": "Finance",
@@ -52,6 +54,8 @@ const messages = {
     "nav.reports": "Scheduled Reports",
     "nav.admin.users": "User Management",
     "nav.admin.audit": "Audit Log",
+    "nav.admin.fields": "Custom Fields",
+    "nav.admin.data": "Backup & Import",
     "common.add": "Add",
     "common.delete": "Delete",
     "common.save": "Save",
@@ -63,7 +67,7 @@ const messages = {
     "auth.email": "Email",
     "auth.password": "Password",
     "auth.login": "Sign in",
-    "auth.login.title": "ERP Login",
+    "auth.login.title": "WellGreen ERP Login",
     "auth.logout": "Logout",
     "auth.role": "Role",
     "dashboard.summary": "Summary",

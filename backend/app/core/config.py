@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "ERP System"
+    app_name: str = "WellGreen ERP"
     database_url: str = "sqlite:///./erp.db"
     jwt_secret: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"

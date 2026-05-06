@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <rect width="192" height="192" rx="32" fill="#15803d"/>
+  <path d="M96 36c-30 18-44 44-44 70 0 28 18 50 44 50s44-22 44-50c0-26-14-52-44-70z" fill="#86efac"/>
+  <path d="M96 50v100" stroke="#14532d" stroke-width="4" stroke-linecap="round"/>
+  <text x="96" y="180" text-anchor="middle" font-family="sans-serif" font-size="18" font-weight="bold" fill="#f0fdf4">WG</text>
+</svg>

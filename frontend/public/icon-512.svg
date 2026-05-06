@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="80" fill="#15803d"/>
+  <path d="M256 96c-80 48-118 116-118 188 0 76 48 132 118 132s118-56 118-132c0-72-38-140-118-188z" fill="#86efac"/>
+  <path d="M256 130v270" stroke="#14532d" stroke-width="10" stroke-linecap="round"/>
+  <text x="256" y="478" text-anchor="middle" font-family="sans-serif" font-size="50" font-weight="bold" fill="#f0fdf4">WellGreen</text>
+</svg>

@@ -19,11 +19,14 @@ export default function Sidebar() {
 
   return (
     <aside className="w-60 min-h-screen bg-slate-900 text-slate-100 flex flex-col">
-      <div className="px-4 py-5 text-xl font-semibold border-b border-slate-700 flex justify-between items-center">
-        <span>{t("app.title")}</span>
+      <div className="px-4 py-5 border-b border-brand-800 flex justify-between items-center">
+        <div className="flex items-center gap-2">
+          <span className="w-8 h-8 rounded-full bg-brand-500 flex items-center justify-center text-lg">🌱</span>
+          <span className="text-lg font-semibold tracking-tight">{t("app.title")}</span>
+        </div>
         <button
           onClick={() => setLang(lang === "ko" ? "en" : "ko")}
-          className="text-xs px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded"
+          className="text-xs px-2 py-0.5 bg-brand-800 hover:bg-brand-700 rounded"
         >
           {t("lang.toggle")}
         </button>

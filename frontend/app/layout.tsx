@@ -1,14 +1,32 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import Toasts from "@/components/Toasts";
+import PWARegister from "@/components/PWARegister";
 import { CurrencyProvider } from "@/lib/currency";
 import { I18nProvider } from "@/lib/i18n";
+import { TenantProvider } from "@/lib/tenant";
 import { ThemeProvider } from "@/lib/theme";
 import { WSProvider } from "@/lib/ws";
 
 export const metadata: Metadata = {
-  title: "ERP System",
-  description: "Internal ERP PoC",
+  title: "WellGreen ERP",
+  description: "WellGreen 종합 ERP — 음료/주류/유통/물류 관리",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    title: "WellGreen ERP",
+    statusBarStyle: "default",
+  },
+  icons: {
+    icon: [{ url: "/icon-192.svg", type: "image/svg+xml" }],
+    apple: [{ url: "/icon-192.svg" }],
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#15803d",
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -17,12 +35,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <ThemeProvider>
           <I18nProvider>
-            <CurrencyProvider>
-              <WSProvider>
-                {children}
-                <Toasts />
-              </WSProvider>
-            </CurrencyProvider>
+            <TenantProvider>
+              <CurrencyProvider>
+                <WSProvider>
+                  {children}
+                  <Toasts />
+                  <PWARegister />
+                </WSProvider>
+              </CurrencyProvider>
+            </TenantProvider>
           </I18nProvider>
         </ThemeProvider>
       </body>

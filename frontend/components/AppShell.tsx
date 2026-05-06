@@ -4,6 +4,7 @@ import CurrencyPicker from "./CurrencyPicker";
 import NotificationsBell from "./NotificationsBell";
 import SearchBar from "./SearchBar";
 import Sidebar from "./Sidebar";
+import TenantPicker from "./TenantPicker";
 import { useTheme } from "@/lib/theme";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -16,6 +17,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 px-6 py-2 flex items-center gap-3">
             <SearchBar />
             <div className="flex-1" />
+            <TenantPicker />
             <CurrencyPicker />
             <button
               onClick={toggle}

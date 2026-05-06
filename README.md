@@ -1,6 +1,8 @@
-# ERP System (PoC)
+# WellGreen ERP
 
-사내 PoC / 내부 도구용 모듈식 ERP 시스템입니다.
+음료/주류 제조 + 편의점 유통 + 수입식품 + 종합 물류를 다루는 가상 회사
+**WellGreen**(웰그린)을 위한 모듈식 ERP 시스템 PoC입니다.
+디자인 톤은 well-green.com 의 브랜드 컬러(브랜드 그린)에서 차용했습니다.
 
 ## 스택
 
@@ -23,7 +25,11 @@
 | `attachments` | 첨부파일 | 모든 모듈 레코드에 파일 첨부 가능 |
 | `approvals` | 결재 워크플로 | 다단계 결재 (승인/반려/취소), 이메일 통보 |
 | `search` | 검색 | 모든 모듈 통합 검색 (직원/고객/품목/주문/계정/전표) |
-| `currencies` | 통화/환율 | 다중 통화 지원, 환율 변환 |
+| `currencies` | 통화/환율 | 다중 통화 지원, 환율 변환 (KRW/USD/EUR/JPY) |
+| `tenants` | 멀티테넌시 | 본사/자회사 단위로 데이터 격리 (X-Tenant-ID 헤더) |
+| `custom_fields` | 커스텀 필드 (EAV) | 모듈별 임의 속성 정의/저장 |
+| `admin_ops` | 백업·복원·임포트 | 전체 JSON 백업/복원, Excel(xlsx) 일괄 등록 |
+| `graphql` | GraphQL 게이트웨이 | `/graphql` 단일 엔드포인트 (read-only) |
 
 ### 추가 기능
 - **i18n**: 한국어/영어 토글 (사이드바 상단 버튼)
@@ -64,6 +70,24 @@
 - **RLS (Record-level access)**: 영업 모듈에 적용 (`Customer.owner_id`, `SalesOrder.owner_id`)
   - admin/manager는 전체 조회, staff/viewer는 자신이 만든 레코드만
   - `app/core/rls.py`의 `scope_to_owner(query, model, user, module)` 헬퍼로 다른 모듈에도 동일 패턴 적용 가능
+- **멀티테넌시**: `Tenant` + `UserTenant` + `X-Tenant-ID` 헤더 기반 스코핑
+  - 헤더 사이드바에 테넌트 선택기 (웰그린 코리아 / 라들러 / 트루웰 물류)
+  - 영업 모듈(고객/주문)은 자동으로 테넌트별 격리
+- **커스텀 필드 (EAV)**: 모든 모듈 레코드에 임의 속성 추가 가능
+  - 타입: text / number / date / boolean / select(옵션 리스트)
+  - admin이 `/admin/custom-fields`에서 정의, 모듈 페이지에서 값 입력
+- **백업 / 복원 / Excel 임포트** (`/admin/data`)
+  - 모든 테이블 → 단일 JSON 다운로드 (`GET /api/admin/backup`)
+  - JSON 업로드로 복원 (`truncate_first` 옵션으로 기존 데이터 wipe)
+  - .xlsx 일괄 등록: 품목 / 고객 / 직원 (한글·영문 헤더 모두 지원)
+- **GraphQL 게이트웨이**: `/graphql` (POST) — `employees`, `items`, `customers`, `orders` 쿼리
+  - JWT Authorization 헤더 그대로 사용, 외부 파트너용 단일 엔드포인트
+- **모바일 PWA**: `/manifest.webmanifest` + Service Worker
+  - 브랜드 그린 테마, 홈 화면 추가 가능, 오프라인 셸 캐싱
+- **WellGreen 브랜딩**: Tailwind `brand` 팔레트 (green-600 계열), 🌱 로고
+  - 시드 데이터: 라들러/필스너/바이젠/콜라/스파클링워터/감자칩 등 F&B 제품
+  - 테넌트: 웰그린 코리아 / 웰그린 라들러 / 트루웰 물류
+  - 고객: 세븐일레븐, GS25, CU, 이마트24, 한강 도매상사
 
 ## 디렉토리 구조
 
@@ -105,11 +129,11 @@ docker compose up --build
 - Backend: http://localhost:8000 (Swagger: `/docs`)
 - Frontend: http://localhost:3000
 - Postgres: localhost:5432 (erp / erp)
-- 기본 계정 (모두 비밀번호 `password1234`, admin만 `admin1234`):
-  - `admin@example.com` (admin) — 시스템/마스터 데이터 모두 가능
-  - `manager@example.com` (manager) — 직원 추가, 전표 작성, 주문 확정
-  - `staff@example.com` (staff) — 입출고, 고객/주문 생성
-  - `viewer@example.com` (viewer) — 읽기 전용
+- 기본 계정 (모두 `@wellgreen.com`):
+  - `admin@wellgreen.com` / `admin1234` (admin)
+  - `manager@wellgreen.com` / `password1234` (manager)
+  - `staff@wellgreen.com` / `password1234` (staff)
+  - `viewer@wellgreen.com` / `password1234` (viewer)
 
 ### 로컬 실행
 

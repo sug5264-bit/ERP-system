@@ -20,4 +20,16 @@ export const MODULES: ModuleDef[] = [
 export const ADMIN_MODULES: ModuleDef[] = [
   { key: "admin-users", labelKey: "nav.admin.users", href: "/admin/users", minRole: "admin" },
   { key: "admin-audit", labelKey: "nav.admin.audit", href: "/admin/audit", minRole: "admin" },
+  {
+    key: "admin-fields",
+    labelKey: "nav.admin.fields",
+    href: "/admin/custom-fields",
+    minRole: "admin",
+  },
+  {
+    key: "admin-data",
+    labelKey: "nav.admin.data",
+    href: "/admin/data",
+    minRole: "admin",
+  },
 ];

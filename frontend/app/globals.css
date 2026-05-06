@@ -10,7 +10,23 @@ body {
   @apply bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100;
 }
 
-/* Common surface / form / table styles in dark mode */
+/* Map old slate-900 button styles to brand green */
+button.bg-slate-900,
+.bg-slate-900 {
+  @apply bg-brand-700;
+}
+
+button.bg-slate-900:hover,
+.hover\:bg-slate-800:hover {
+  @apply bg-brand-800;
+}
+
+/* Sidebar uses dark-green tone instead of pure slate */
+aside.bg-slate-900 {
+  @apply bg-brand-900;
+}
+
+/* Dark mode mapping for surfaces, forms, tables */
 .dark input,
 .dark select,
 .dark textarea {

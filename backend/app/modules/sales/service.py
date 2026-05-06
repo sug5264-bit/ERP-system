@@ -15,8 +15,13 @@ def list_customers(db: Session, query_filter=None) -> list[Customer]:
     return q.order_by(Customer.name).all()
 
 
-def create_customer(db: Session, payload: CustomerCreate, owner_id: int | None = None) -> Customer:
-    customer = Customer(**payload.model_dump(), owner_id=owner_id)
+def create_customer(
+    db: Session,
+    payload: CustomerCreate,
+    owner_id: int | None = None,
+    tenant_id: int | None = None,
+) -> Customer:
+    customer = Customer(**payload.model_dump(), owner_id=owner_id, tenant_id=tenant_id)
     db.add(customer)
     db.commit()
     db.refresh(customer)
@@ -34,7 +39,12 @@ def get_order(db: Session, order_id: int) -> SalesOrder | None:
     return db.query(SalesOrder).filter(SalesOrder.id == order_id).first()
 
 
-def create_order(db: Session, payload: SalesOrderCreate, owner_id: int | None = None) -> SalesOrder:
+def create_order(
+    db: Session,
+    payload: SalesOrderCreate,
+    owner_id: int | None = None,
+    tenant_id: int | None = None,
+) -> SalesOrder:
     total = sum(
         (Decimal(line.quantity) * Decimal(line.unit_price) for line in payload.items),
         Decimal("0"),
@@ -46,6 +56,7 @@ def create_order(db: Session, payload: SalesOrderCreate, owner_id: int | None = 
         status=OrderStatus.draft,
         total=total,
         owner_id=owner_id,
+        tenant_id=tenant_id,
     )
     for line in payload.items:
         order.items.append(SalesOrderItem(**line.model_dump()))

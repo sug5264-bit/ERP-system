@@ -8,7 +8,7 @@ export default function LoginPage() {
   const router = useRouter();
   const params = useSearchParams();
   const { t, lang, setLang } = useT();
-  const [email, setEmail] = useState("admin@example.com");
+  const [email, setEmail] = useState("admin@wellgreen.com");
   const [password, setPassword] = useState("admin1234");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -101,7 +101,7 @@ export default function LoginPage() {
           </>
         )}
 
-        <p className="text-xs text-slate-500">admin@example.com / admin1234</p>
+        <p className="text-xs text-slate-500">admin@wellgreen.com / admin1234</p>
       </form>
     </div>
   );

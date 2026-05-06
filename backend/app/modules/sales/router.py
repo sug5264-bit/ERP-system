@@ -13,6 +13,7 @@ from app.modules.sales.schemas import (
     SalesOrderCreate,
     SalesOrderOut,
 )
+from app.modules.tenants.router import get_current_tenant_id
 
 router = APIRouter(
     prefix="/api/sales",
@@ -21,14 +22,23 @@ router = APIRouter(
 )
 
 
+def _scoped_filter(user: User, tenant_id: int | None):
+    """Apply both owner-RLS and tenant scoping to a query."""
+    def apply(q, m):
+        q = scope_to_owner(q, m, user, "sales")
+        if tenant_id is not None:
+            q = q.filter(m.tenant_id == tenant_id)
+        return q
+    return apply
+
+
 @router.get("/customers", response_model=list[CustomerOut])
 def list_customers(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    tenant_id: int | None = Depends(get_current_tenant_id),
 ):
-    return service.list_customers(
-        db, query_filter=lambda q, m: scope_to_owner(q, m, user, "sales")
-    )
+    return service.list_customers(db, query_filter=_scoped_filter(user, tenant_id))
 
 
 @router.post(
@@ -40,18 +50,18 @@ def create_customer(
     payload: CustomerCreate,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    tenant_id: int | None = Depends(get_current_tenant_id),
 ):
-    return service.create_customer(db, payload, owner_id=user.id)
+    return service.create_customer(db, payload, owner_id=user.id, tenant_id=tenant_id)
 
 
 @router.get("/orders", response_model=list[SalesOrderOut])
 def list_orders(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    tenant_id: int | None = Depends(get_current_tenant_id),
 ):
-    return service.list_orders(
-        db, query_filter=lambda q, m: scope_to_owner(q, m, user, "sales")
-    )
+    return service.list_orders(db, query_filter=_scoped_filter(user, tenant_id))
 
 
 @router.get("/orders/export")
@@ -86,8 +96,9 @@ def create_order(
     payload: SalesOrderCreate,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    tenant_id: int | None = Depends(get_current_tenant_id),
 ):
-    return service.create_order(db, payload, owner_id=user.id)
+    return service.create_order(db, payload, owner_id=user.id, tenant_id=tenant_id)
 
 
 @router.post(

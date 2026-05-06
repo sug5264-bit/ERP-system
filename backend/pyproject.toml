@@ -18,6 +18,7 @@ dependencies = [
     "reportlab>=4.0.0",
     "httpx>=0.26.0",
     "apscheduler>=3.10.0",
+    "strawberry-graphql[fastapi]>=0.220.0",
 ]
 
 [build-system]

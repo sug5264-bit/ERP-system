@@ -22,6 +22,9 @@ MODULES = [
     "approvals",
     "search",
     "currencies",
+    "tenants",
+    "custom_fields",
+    "admin_ops",
 ]
 
 
@@ -73,6 +76,10 @@ def create_app() -> FastAPI:
         app.include_router(module.router)
         if hasattr(module, "ws_router"):
             app.include_router(module.ws_router)
+
+    # GraphQL gateway (read-only)
+    from app.core.graphql_app import graphql_router
+    app.include_router(graphql_router, prefix="/graphql")
 
     @app.get("/api/health")
     def health():

@@ -1,4 +1,5 @@
 const TOKEN_KEY = "erp_token";
+const TENANT_KEY = "erp_tenant_id";
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -13,16 +14,23 @@ export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+function getTenantId(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(TENANT_KEY);
+}
+
 export async function api<T = unknown>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
   const token = getToken();
+  const tenantId = getTenantId();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
+  if (tenantId) headers["X-Tenant-ID"] = tenantId;
 
   const res = await fetch(path, { ...options, headers });
   if (!res.ok) {

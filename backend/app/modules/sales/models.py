@@ -22,6 +22,7 @@ class Customer(BaseEntity):
     phone: Mapped[str | None] = mapped_column(String(50))
     company: Mapped[str | None] = mapped_column(String(200))
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), index=True)
 
 
 class SalesOrder(BaseEntity):
@@ -33,6 +34,7 @@ class SalesOrder(BaseEntity):
     status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), default=OrderStatus.draft)
     total: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), index=True)
 
     customer: Mapped[Customer] = relationship()
     items: Mapped[list["SalesOrderItem"]] = relationship(
