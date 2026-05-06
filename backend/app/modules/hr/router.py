@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, require_module_role
 from app.core.db import get_db
+from app.core.exports import export_table
 from app.modules.hr import service
 from app.modules.hr.schemas import (
     DepartmentCreate,
@@ -27,7 +28,7 @@ def list_departments(db: Session = Depends(get_db)):
 @router.post(
     "/departments",
     response_model=DepartmentOut,
-    dependencies=[Depends(require_role("admin"))],
+    dependencies=[Depends(require_module_role("hr", "admin"))],
 )
 def create_department(payload: DepartmentCreate, db: Session = Depends(get_db)):
     return service.create_department(db, payload)
@@ -38,10 +39,29 @@ def list_employees(db: Session = Depends(get_db)):
     return service.list_employees(db)
 
 
+@router.get("/employees/export")
+def export_employees(format: str = Query("csv"), db: Session = Depends(get_db)):
+    employees = service.list_employees(db)
+    headers = ["사번", "이름", "이메일", "직책", "부서", "급여", "입사일"]
+    rows = [
+        [
+            e.employee_no,
+            e.full_name,
+            e.email,
+            e.position or "",
+            e.department.name if e.department else "",
+            float(e.salary),
+            e.hire_date.isoformat() if e.hire_date else "",
+        ]
+        for e in employees
+    ]
+    return export_table(rows, headers, "employees", format)
+
+
 @router.post(
     "/employees",
     response_model=EmployeeOut,
-    dependencies=[Depends(require_role("manager"))],
+    dependencies=[Depends(require_module_role("hr", "manager"))],
 )
 def create_employee(payload: EmployeeCreate, db: Session = Depends(get_db)):
     return service.create_employee(db, payload)
@@ -50,7 +70,7 @@ def create_employee(payload: EmployeeCreate, db: Session = Depends(get_db)):
 @router.patch(
     "/employees/{employee_id}",
     response_model=EmployeeOut,
-    dependencies=[Depends(require_role("manager"))],
+    dependencies=[Depends(require_module_role("hr", "manager"))],
 )
 def update_employee(employee_id: int, payload: EmployeeUpdate, db: Session = Depends(get_db)):
     emp = service.update_employee(db, employee_id, payload)
@@ -61,7 +81,7 @@ def update_employee(employee_id: int, payload: EmployeeUpdate, db: Session = Dep
 
 @router.delete(
     "/employees/{employee_id}",
-    dependencies=[Depends(require_role("admin"))],
+    dependencies=[Depends(require_module_role("hr", "admin"))],
 )
 def delete_employee(employee_id: int, db: Session = Depends(get_db)):
     if not service.delete_employee(db, employee_id):

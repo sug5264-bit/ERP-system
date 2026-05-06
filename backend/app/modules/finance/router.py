@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, require_module_role
 from app.core.db import get_db
 from app.modules.finance import service
 from app.modules.finance.schemas import (
@@ -26,7 +26,7 @@ def list_accounts(db: Session = Depends(get_db)):
 @router.post(
     "/accounts",
     response_model=AccountOut,
-    dependencies=[Depends(require_role("admin"))],
+    dependencies=[Depends(require_module_role("finance", "admin"))],
 )
 def create_account(payload: AccountCreate, db: Session = Depends(get_db)):
     return service.create_account(db, payload)
@@ -40,7 +40,7 @@ def list_journal_entries(db: Session = Depends(get_db)):
 @router.post(
     "/journal-entries",
     response_model=JournalEntryOut,
-    dependencies=[Depends(require_role("manager"))],
+    dependencies=[Depends(require_module_role("finance", "manager"))],
 )
 def create_journal_entry(payload: JournalEntryCreate, db: Session = Depends(get_db)):
     try:

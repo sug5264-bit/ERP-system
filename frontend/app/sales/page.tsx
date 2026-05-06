@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
+import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
 
 type Customer = { id: number; name: string; email: string | null; company: string | null };
@@ -122,7 +123,10 @@ export default function SalesPage() {
 
   return (
     <AppShell>
-      <h1 className="text-2xl font-semibold mb-4">영업 / CRM</h1>
+      <div className="flex justify-between items-center mb-4">
+        <h1 className="text-2xl font-semibold">영업 / CRM</h1>
+        <ExportMenu endpoint="/api/sales/orders/export" filename="orders" />
+      </div>
       {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
 
       <h2 className="text-lg font-medium mb-2">고객 추가</h2>

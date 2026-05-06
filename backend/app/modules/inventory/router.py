@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, require_module_role
 from app.core.db import get_db
+from app.core.exports import export_table
 from app.modules.inventory import service
 from app.modules.inventory.schemas import (
     ItemCreate,
@@ -23,10 +24,28 @@ def list_items(db: Session = Depends(get_db)):
     return service.list_items(db)
 
 
+@router.get("/items/export")
+def export_items(format: str = Query("csv"), db: Session = Depends(get_db)):
+    items = service.list_items(db)
+    headers = ["SKU", "품목명", "단위", "단가", "재고", "재고가치"]
+    rows = [
+        [
+            i.sku,
+            i.name,
+            i.unit,
+            float(i.unit_price),
+            float(i.stock_qty),
+            float(i.unit_price) * float(i.stock_qty),
+        ]
+        for i in items
+    ]
+    return export_table(rows, headers, "items", format)
+
+
 @router.post(
     "/items",
     response_model=ItemOut,
-    dependencies=[Depends(require_role("admin"))],
+    dependencies=[Depends(require_module_role("inventory", "admin"))],
 )
 def create_item(payload: ItemCreate, db: Session = Depends(get_db)):
     return service.create_item(db, payload)
@@ -40,7 +59,7 @@ def list_movements(db: Session = Depends(get_db)):
 @router.post(
     "/movements",
     response_model=StockMovementOut,
-    dependencies=[Depends(require_role("staff"))],
+    dependencies=[Depends(require_module_role("inventory", "staff"))],
 )
 def create_movement(payload: StockMovementCreate, db: Session = Depends(get_db)):
     try:

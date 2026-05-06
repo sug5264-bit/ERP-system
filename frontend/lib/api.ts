@@ -33,6 +33,41 @@ export async function api<T = unknown>(
   return (await res.json()) as T;
 }
 
+export async function downloadFile(path: string, filename: string) {
+  const token = getToken();
+  const res = await fetch(path, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+export async function uploadFile(
+  path: string,
+  file: File,
+  fields: Record<string, string | number> = {}
+) {
+  const token = getToken();
+  const fd = new FormData();
+  fd.append("file", file);
+  for (const [k, v] of Object.entries(fields)) fd.append(k, String(v));
+  const res = await fetch(path, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    body: fd,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function login(email: string, password: string) {
   const body = new URLSearchParams({ username: email, password });
   const res = await fetch("/api/auth/login", {

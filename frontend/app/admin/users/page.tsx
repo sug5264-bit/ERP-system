@@ -13,7 +13,10 @@ type User = {
   role: Role;
 };
 
+type ModulePermission = { id?: number; module: string; role: Role };
+
 const ROLES: Role[] = ["admin", "manager", "staff", "viewer"];
+const MODULE_KEYS = ["hr", "finance", "inventory", "sales"];
 
 export default function UsersAdminPage() {
   const { t } = useT();
@@ -25,6 +28,8 @@ export default function UsersAdminPage() {
     role: "staff" as Role,
   });
   const [error, setError] = useState("");
+  const [editing, setEditing] = useState<User | null>(null);
+  const [perms, setPerms] = useState<Record<string, Role | "">>({});
 
   const load = async () => setUsers(await api<User[]>("/api/auth/users"));
 
@@ -36,10 +41,7 @@ export default function UsersAdminPage() {
     e.preventDefault();
     setError("");
     try {
-      await api("/api/auth/users", {
-        method: "POST",
-        body: JSON.stringify(form),
-      });
+      await api("/api/auth/users", { method: "POST", body: JSON.stringify(form) });
       setForm({ email: "", full_name: "", password: "", role: "staff" });
       await load();
     } catch (e) {
@@ -64,6 +66,33 @@ export default function UsersAdminPage() {
     try {
       await api(`/api/auth/users/${id}`, { method: "DELETE" });
       await load();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const openPerms = async (u: User) => {
+    setEditing(u);
+    setError("");
+    const existing = await api<ModulePermission[]>(`/api/auth/users/${u.id}/permissions`);
+    const map: Record<string, Role | ""> = {};
+    MODULE_KEYS.forEach((m) => (map[m] = ""));
+    existing.forEach((p) => (map[p.module] = p.role));
+    setPerms(map);
+  };
+
+  const savePerms = async () => {
+    if (!editing) return;
+    const payload = MODULE_KEYS.filter((m) => perms[m]).map((m) => ({
+      module: m,
+      role: perms[m] as Role,
+    }));
+    try {
+      await api(`/api/auth/users/${editing.id}/permissions`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      setEditing(null);
     } catch (e) {
       setError(String(e));
     }
@@ -142,17 +171,71 @@ export default function UsersAdminPage() {
             key: "actions",
             header: t("common.actions"),
             render: (u) => (
-              <button
-                onClick={() => remove(u.id)}
-                className="text-red-600 text-xs hover:underline"
-              >
-                {t("common.delete")}
-              </button>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => openPerms(u)}
+                  className="text-blue-700 text-xs hover:underline"
+                >
+                  모듈 권한
+                </button>
+                <button
+                  onClick={() => remove(u.id)}
+                  className="text-red-600 text-xs hover:underline"
+                >
+                  {t("common.delete")}
+                </button>
+              </div>
             ),
           },
         ]}
         rows={users}
       />
+
+      {editing && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-30">
+          <div className="bg-white rounded-lg p-6 w-96 space-y-3">
+            <h2 className="text-lg font-medium">
+              모듈 권한 - {editing.full_name}
+            </h2>
+            <p className="text-xs text-slate-500">
+              모듈별 역할 (비워두면 사용자의 기본 역할 사용)
+            </p>
+            {MODULE_KEYS.map((m) => (
+              <div key={m} className="flex items-center justify-between gap-2">
+                <span className="text-sm w-24 capitalize">{m}</span>
+                <select
+                  value={perms[m] ?? ""}
+                  onChange={(e) =>
+                    setPerms((p) => ({ ...p, [m]: e.target.value as Role | "" }))
+                  }
+                  className="border rounded px-2 py-1 text-sm flex-1"
+                >
+                  <option value="">(기본값: {editing.role})</option>
+                  {ROLES.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ))}
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={() => setEditing(null)}
+                className="px-3 py-1 border rounded text-sm"
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                onClick={savePerms}
+                className="px-3 py-1 bg-slate-900 text-white rounded text-sm"
+              >
+                {t("common.save")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }

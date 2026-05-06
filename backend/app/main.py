@@ -8,7 +8,17 @@ from app.core.config import settings
 from app.core.db import Base, engine
 
 # Modules to auto-register. Add a new entry here when introducing a new module.
-MODULES = ["auth", "hr", "finance", "inventory", "sales", "audit", "reports"]
+MODULES = [
+    "auth",
+    "hr",
+    "finance",
+    "inventory",
+    "sales",
+    "audit",
+    "reports",
+    "notifications",
+    "attachments",
+]
 
 
 def create_app() -> FastAPI:

@@ -1,8 +1,11 @@
 "use client";
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
+import Attachments from "@/components/Attachments";
 import DataTable from "@/components/DataTable";
+import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
+import { hasRole, useMe } from "@/lib/auth";
 
 type Employee = {
   id: number;
@@ -15,6 +18,7 @@ type Employee = {
 };
 
 export default function HRPage() {
+  const me = useMe();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [form, setForm] = useState({
     employee_no: "",
@@ -24,6 +28,7 @@ export default function HRPage() {
     salary: "0",
   });
   const [error, setError] = useState("");
+  const [attachFor, setAttachFor] = useState<Employee | null>(null);
 
   const load = async () => {
     setEmployees(await api<Employee[]>("/api/hr/employees"));
@@ -50,7 +55,10 @@ export default function HRPage() {
 
   return (
     <AppShell>
-      <h1 className="text-2xl font-semibold mb-4">HR / 인사</h1>
+      <div className="flex justify-between items-center mb-4">
+        <h1 className="text-2xl font-semibold">HR / 인사</h1>
+        <ExportMenu endpoint="/api/hr/employees/export" filename="employees" />
+      </div>
 
       <form
         onSubmit={submit}
@@ -110,9 +118,42 @@ export default function HRPage() {
             render: (r) => r.department?.name ?? "-",
           },
           { key: "salary", header: "급여" },
+          {
+            key: "files",
+            header: "첨부",
+            render: (r) => (
+              <button
+                onClick={() => setAttachFor(r)}
+                className="text-blue-700 text-xs hover:underline"
+              >
+                파일
+              </button>
+            ),
+          },
         ]}
         rows={employees}
       />
+
+      {attachFor && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-30">
+          <div className="bg-white rounded-lg p-6 w-96 space-y-3">
+            <div className="flex justify-between items-center">
+              <h2 className="text-lg font-medium">{attachFor.full_name} - 첨부파일</h2>
+              <button
+                onClick={() => setAttachFor(null)}
+                className="text-slate-500 hover:text-slate-900"
+              >
+                ✕
+              </button>
+            </div>
+            <Attachments
+              relatedType="employee"
+              relatedId={attachFor.id}
+              canDelete={hasRole(me, "manager")}
+            />
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }

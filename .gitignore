@@ -18,6 +18,9 @@ node_modules/
 out/
 *.log
 
+# Uploads
+uploads/
+
 # OS
 .DS_Store
 

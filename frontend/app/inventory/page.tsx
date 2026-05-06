@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
+import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
 
 type Item = {
@@ -55,7 +56,10 @@ export default function InventoryPage() {
 
   return (
     <AppShell>
-      <h1 className="text-2xl font-semibold mb-4">재고 / 물류</h1>
+      <div className="flex justify-between items-center mb-4">
+        <h1 className="text-2xl font-semibold">재고 / 물류</h1>
+        <ExportMenu endpoint="/api/inventory/items/export" filename="items" />
+      </div>
 
       <form
         onSubmit={submit}

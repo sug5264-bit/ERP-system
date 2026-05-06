@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
+import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
@@ -16,20 +17,95 @@ type Log = {
   created_at: string;
 };
 
+const METHODS = ["", "POST", "PATCH", "PUT", "DELETE"];
+
 export default function AuditLogPage() {
   const { t } = useT();
   const [logs, setLogs] = useState<Log[]>([]);
   const [error, setError] = useState("");
+  const [filters, setFilters] = useState({
+    user_email: "",
+    method: "",
+    path: "",
+    status_code: "",
+  });
 
-  useEffect(() => {
-    api<Log[]>("/api/audit/logs?limit=200")
+  const buildQuery = () => {
+    const p = new URLSearchParams({ limit: "200" });
+    if (filters.user_email) p.append("user_email", filters.user_email);
+    if (filters.method) p.append("method", filters.method);
+    if (filters.path) p.append("path", filters.path);
+    if (filters.status_code) p.append("status_code", filters.status_code);
+    return p.toString();
+  };
+
+  const load = () =>
+    api<Log[]>(`/api/audit/logs?${buildQuery()}`)
       .then(setLogs)
       .catch((e) => setError(String(e)));
+
+  useEffect(() => {
+    load();
   }, []);
 
   return (
     <AppShell>
-      <h1 className="text-2xl font-semibold mb-4">{t("nav.admin.audit")}</h1>
+      <div className="flex justify-between items-center mb-4">
+        <h1 className="text-2xl font-semibold">{t("nav.admin.audit")}</h1>
+        <ExportMenu endpoint="/api/audit/logs/export" filename="audit_logs" />
+      </div>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          load();
+        }}
+        className="bg-white p-3 rounded-lg shadow-sm border border-slate-200 grid grid-cols-2 md:grid-cols-5 gap-2 mb-4"
+      >
+        <input
+          placeholder="user email"
+          value={filters.user_email}
+          onChange={(e) => setFilters({ ...filters, user_email: e.target.value })}
+          className="border rounded px-2 py-1 text-sm"
+        />
+        <select
+          value={filters.method}
+          onChange={(e) => setFilters({ ...filters, method: e.target.value })}
+          className="border rounded px-2 py-1 text-sm"
+        >
+          {METHODS.map((m) => (
+            <option key={m} value={m}>
+              {m || "method"}
+            </option>
+          ))}
+        </select>
+        <input
+          placeholder="path contains"
+          value={filters.path}
+          onChange={(e) => setFilters({ ...filters, path: e.target.value })}
+          className="border rounded px-2 py-1 text-sm"
+        />
+        <input
+          placeholder="status code"
+          value={filters.status_code}
+          onChange={(e) => setFilters({ ...filters, status_code: e.target.value })}
+          className="border rounded px-2 py-1 text-sm"
+        />
+        <div className="flex gap-2">
+          <button className="px-3 py-1 bg-slate-900 text-white rounded text-sm">검색</button>
+          <button
+            type="button"
+            onClick={() => {
+              setFilters({ user_email: "", method: "", path: "", status_code: "" });
+              api<Log[]>("/api/audit/logs?limit=200").then(setLogs);
+            }}
+            className="px-3 py-1 border rounded text-sm"
+          >
+            초기화
+          </button>
+        </div>
+      </form>
+
       {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
 
       <DataTable<Log>

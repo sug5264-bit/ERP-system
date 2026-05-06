@@ -2,11 +2,20 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import effective_role, get_current_user, require_role
 from app.core.db import get_db
 from app.core.security import create_access_token, hash_password, verify_password
-from app.modules.auth.models import User
-from app.modules.auth.schemas import Token, UserCreate, UserOut, UserUpdate
+from app.modules.auth.models import User, UserModulePermission
+from app.modules.auth.schemas import (
+    ModulePermissionIn,
+    ModulePermissionOut,
+    Token,
+    UserCreate,
+    UserOut,
+    UserUpdate,
+)
+
+MODULES_LIST = ["hr", "finance", "inventory", "sales"]
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -41,6 +50,12 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
 @router.get("/me", response_model=UserOut)
 def me(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+@router.get("/me/effective-roles")
+def my_effective_roles(current_user: User = Depends(get_current_user)):
+    """Return the effective role of the current user for each business module."""
+    return {m: effective_role(current_user, m) for m in MODULES_LIST}
 
 
 @router.get(
@@ -110,3 +125,49 @@ def delete_user(
     db.delete(user)
     db.commit()
     return {"ok": True}
+
+
+@router.get(
+    "/users/{user_id}/permissions",
+    response_model=list[ModulePermissionOut],
+    dependencies=[Depends(require_role("admin"))],
+)
+def list_user_permissions(user_id: int, db: Session = Depends(get_db)):
+    return (
+        db.query(UserModulePermission)
+        .filter(UserModulePermission.user_id == user_id)
+        .order_by(UserModulePermission.module)
+        .all()
+    )
+
+
+@router.put(
+    "/users/{user_id}/permissions",
+    response_model=list[ModulePermissionOut],
+    dependencies=[Depends(require_role("admin"))],
+)
+def set_user_permissions(
+    user_id: int,
+    permissions: list[ModulePermissionIn],
+    db: Session = Depends(get_db),
+):
+    """Replace the user's module-permission set in one call."""
+    if not db.query(User).filter(User.id == user_id).first():
+        raise HTTPException(status_code=404, detail="User not found")
+
+    db.query(UserModulePermission).filter(
+        UserModulePermission.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    for p in permissions:
+        if p.module not in MODULES_LIST:
+            raise HTTPException(status_code=400, detail=f"Unknown module: {p.module}")
+        db.add(UserModulePermission(user_id=user_id, module=p.module, role=p.role))
+    db.commit()
+
+    return (
+        db.query(UserModulePermission)
+        .filter(UserModulePermission.user_id == user_id)
+        .order_by(UserModulePermission.module)
+        .all()
+    )
