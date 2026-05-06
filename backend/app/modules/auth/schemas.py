@@ -20,6 +20,13 @@ class UserOut(BaseModel):
         from_attributes = True
 
 
+class UserUpdate(BaseModel):
+    full_name: str | None = None
+    role: Role | None = None
+    is_active: bool | None = None
+    password: str | None = None
+
+
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"

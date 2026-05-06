@@ -3,16 +3,18 @@ from importlib import import_module
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.audit_middleware import AuditMiddleware
 from app.core.config import settings
 from app.core.db import Base, engine
 
 # Modules to auto-register. Add a new entry here when introducing a new module.
-MODULES = ["auth", "hr", "finance", "inventory", "sales"]
+MODULES = ["auth", "hr", "finance", "inventory", "sales", "audit", "reports"]
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name)
 
+    app.add_middleware(AuditMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

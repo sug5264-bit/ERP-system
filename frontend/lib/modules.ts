@@ -1,13 +1,21 @@
-// Module registry - add a new entry here when introducing a new module on the frontend.
+// Module registry. Add a new entry when introducing a new module.
+import type { Role } from "./auth";
+
 export type ModuleDef = {
   key: string;
-  label: string;
+  labelKey: string; // i18n key
   href: string;
+  minRole?: Role; // optional: hide nav entry if user lacks role
 };
 
 export const MODULES: ModuleDef[] = [
-  { key: "hr", label: "HR / 인사", href: "/hr" },
-  { key: "finance", label: "재무 / 회계", href: "/finance" },
-  { key: "inventory", label: "재고 / 물류", href: "/inventory" },
-  { key: "sales", label: "영업 / CRM", href: "/sales" },
+  { key: "hr", labelKey: "nav.hr", href: "/hr" },
+  { key: "finance", labelKey: "nav.finance", href: "/finance" },
+  { key: "inventory", labelKey: "nav.inventory", href: "/inventory" },
+  { key: "sales", labelKey: "nav.sales", href: "/sales" },
+];
+
+export const ADMIN_MODULES: ModuleDef[] = [
+  { key: "admin-users", labelKey: "nav.admin.users", href: "/admin/users", minRole: "admin" },
+  { key: "admin-audit", labelKey: "nav.admin.audit", href: "/admin/audit", minRole: "admin" },
 ];
