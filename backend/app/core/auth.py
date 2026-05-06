@@ -1,4 +1,6 @@
-from fastapi import Depends, HTTPException, status
+import hashlib
+
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
 from sqlalchemy.orm import Session
@@ -6,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.security import decode_token
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 # Role precedence: viewer < staff < manager < admin
 _ROLE_ORDER = {"viewer": 0, "staff": 1, "manager": 2, "admin": 3}
@@ -16,27 +18,60 @@ def _role_value(role) -> str:
     return role.value if hasattr(role, "value") else str(role)
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+def hash_api_key(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def get_current_user(
+    request: Request,
+    token: str | None = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    """Resolve user from either a JWT (Authorization: Bearer ...) or an API key
+    (X-API-Key header). API keys are sha256-hashed in storage."""
+    from datetime import datetime
+
     from sqlalchemy.orm import selectinload
 
-    from app.modules.auth.models import User
+    from app.modules.auth.models import ApiKey, User
 
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    try:
-        payload = decode_token(token)
-        user_id = payload.get("sub")
-        if user_id is None:
+
+    user_id: int | None = None
+
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        record = (
+            db.query(ApiKey)
+            .filter(ApiKey.key_hash == hash_api_key(api_key), ApiKey.revoked.is_(False))
+            .first()
+        )
+        if not record:
             raise credentials_exception
-    except JWTError:
+        record.last_used_at = datetime.utcnow()
+        db.commit()
+        user_id = record.user_id
+
+    if user_id is None and token:
+        try:
+            payload = decode_token(token)
+            sub = payload.get("sub")
+            if sub is not None:
+                user_id = int(sub)
+        except JWTError:
+            raise credentials_exception
+
+    if user_id is None:
         raise credentials_exception
+
     user = (
         db.query(User)
         .options(selectinload(User.module_permissions))
-        .filter(User.id == int(user_id))
+        .filter(User.id == user_id)
         .first()
     )
     if user is None or not user.is_active:

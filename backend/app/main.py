@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.audit_middleware import AuditMiddleware
 from app.core.config import settings
 from app.core.db import Base, SessionLocal, engine
+from app.core.rate_limit import RateLimitMiddleware
 
 # Modules to auto-register. Add a new entry here when introducing a new module.
 MODULES = [
@@ -25,6 +26,9 @@ MODULES = [
     "tenants",
     "custom_fields",
     "admin_ops",
+    "ledger",
+    "ocr",
+    "forecast",
 ]
 
 
@@ -54,6 +58,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name)
 
     app.add_middleware(AuditMiddleware)
+    app.add_middleware(RateLimitMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

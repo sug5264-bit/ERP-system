@@ -1,6 +1,7 @@
+from datetime import datetime
 from enum import Enum as PyEnum
 
-from sqlalchemy import Boolean, Enum, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.base_model import BaseEntity
@@ -33,12 +34,6 @@ class User(BaseEntity):
 
 
 class UserModulePermission(BaseEntity):
-    """Per-module override of a user's effective role.
-
-    If a row exists for (user, module), it takes precedence over user.role
-    when checking access to that module.
-    """
-
     __tablename__ = "user_module_permissions"
     __table_args__ = (UniqueConstraint("user_id", "module", name="uq_user_module"),)
 
@@ -47,3 +42,15 @@ class UserModulePermission(BaseEntity):
     role: Mapped[Role] = mapped_column(Enum(Role), nullable=False)
 
     user: Mapped[User] = relationship(back_populates="module_permissions")
+
+
+class ApiKey(BaseEntity):
+    __tablename__ = "api_keys"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
+    prefix: Mapped[str] = mapped_column(String(10), nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    rate_per_minute: Mapped[int] = mapped_column(Integer, default=60)

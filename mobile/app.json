@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "WellGreen ERP",
+    "slug": "wellgreen-erp",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "scheme": "wellgreen",
+    "ios": { "supportsTablet": true, "bundleIdentifier": "com.wellgreen.erp" },
+    "android": { "package": "com.wellgreen.erp" },
+    "plugins": ["expo-router"],
+    "extra": {
+      "apiBase": "http://localhost:8000"
+    }
+  }
+}

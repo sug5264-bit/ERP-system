@@ -7,11 +7,11 @@ from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
-from app.core.auth import effective_role, get_current_user, require_role
+from app.core.auth import effective_role, get_current_user, hash_api_key, require_role
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import create_access_token, hash_password, verify_password
-from app.modules.auth.models import Role, User, UserModulePermission
+from app.modules.auth.models import ApiKey, Role, User, UserModulePermission
 from app.modules.auth.schemas import (
     ModulePermissionIn,
     ModulePermissionOut,
@@ -254,3 +254,77 @@ def google_callback(code: str, db: Session = Depends(get_db)):
 @router.get("/oauth/providers")
 def list_providers():
     return {"google": bool(settings.google_client_id)}
+
+
+# API keys --------------------------------------------------------------------
+
+
+@router.get("/api-keys")
+def list_api_keys(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rows = (
+        db.query(ApiKey)
+        .filter(ApiKey.user_id == current_user.id)
+        .order_by(ApiKey.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "id": k.id,
+            "name": k.name,
+            "prefix": k.prefix,
+            "revoked": k.revoked,
+            "rate_per_minute": k.rate_per_minute,
+            "last_used_at": k.last_used_at,
+            "created_at": k.created_at,
+        }
+        for k in rows
+    ]
+
+
+@router.post("/api-keys")
+def create_api_key(
+    name: str,
+    rate_per_minute: int = 60,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    raw = "wg_" + secrets.token_urlsafe(32)
+    record = ApiKey(
+        user_id=current_user.id,
+        name=name,
+        key_hash=hash_api_key(raw),
+        prefix=raw[:8],
+        rate_per_minute=rate_per_minute,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    # Return the raw key ONCE — it cannot be retrieved later.
+    return {
+        "id": record.id,
+        "name": record.name,
+        "prefix": record.prefix,
+        "key": raw,
+        "warning": "Store this key now. It will not be shown again.",
+    }
+
+
+@router.delete("/api-keys/{key_id}")
+def revoke_api_key(
+    key_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    record = (
+        db.query(ApiKey)
+        .filter(ApiKey.id == key_id, ApiKey.user_id == current_user.id)
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="Not found")
+    record.revoked = True
+    db.commit()
+    return {"ok": True}

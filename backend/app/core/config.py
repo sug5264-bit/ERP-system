@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
     scheduler_interval_minutes: int = 5
 
+    # Rate limiting
+    rate_limit_enabled: bool = True
+    rate_limit_per_minute: int = 240
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

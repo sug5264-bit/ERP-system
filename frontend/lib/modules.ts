@@ -32,4 +32,28 @@ export const ADMIN_MODULES: ModuleDef[] = [
     href: "/admin/data",
     minRole: "admin",
   },
+  {
+    key: "admin-keys",
+    labelKey: "nav.admin.keys",
+    href: "/admin/api-keys",
+    minRole: "viewer",  // any logged-in user can manage their own keys
+  },
+  {
+    key: "admin-ledger",
+    labelKey: "nav.admin.ledger",
+    href: "/admin/ledger",
+    minRole: "admin",
+  },
+  {
+    key: "admin-ocr",
+    labelKey: "nav.admin.ocr",
+    href: "/admin/ocr",
+    minRole: "staff",
+  },
+  {
+    key: "admin-forecast",
+    labelKey: "nav.admin.forecast",
+    href: "/admin/forecast",
+    minRole: "viewer",
+  },
 ];

@@ -58,11 +58,11 @@ export async function downloadFile(path: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-export async function uploadFile(
+export async function uploadFile<T = any>(
   path: string,
   file: File,
   fields: Record<string, string | number> = {}
-) {
+): Promise<T> {
   const token = getToken();
   const fd = new FormData();
   fd.append("file", file);

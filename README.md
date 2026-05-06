@@ -30,6 +30,10 @@
 | `custom_fields` | 커스텀 필드 (EAV) | 모듈별 임의 속성 정의/저장 |
 | `admin_ops` | 백업·복원·임포트 | 전체 JSON 백업/복원, Excel(xlsx) 일괄 등록 |
 | `graphql` | GraphQL 게이트웨이 | `/graphql` 단일 엔드포인트 (read-only) |
+| `ledger` | 공급망 해시 체인 | 모든 입출고 자동 기록, SHA256 chain verify |
+| `ocr` | 영수증 OCR | tesseract 기반 텍스트 추출 + 품목 자동 등록 |
+| `forecast` | 재고 예측 | 7일 이동평균 + 선형 추세 → 권장 재주문 |
+| `api_keys` | API 키 + Rate limit | `X-API-Key` 인증, 토큰 버킷 분당 제한 |
 
 ### 추가 기능
 - **i18n**: 한국어/영어 토글 (사이드바 상단 버튼)
@@ -84,6 +88,20 @@
   - JWT Authorization 헤더 그대로 사용, 외부 파트너용 단일 엔드포인트
 - **모바일 PWA**: `/manifest.webmanifest` + Service Worker
   - 브랜드 그린 테마, 홈 화면 추가 가능, 오프라인 셸 캐싱
+- **모바일 앱 (Expo / React Native)** — `mobile/` 디렉토리
+  - 로그인, 대시보드, 재고 / 주문 화면
+  - JWT를 expo-secure-store에 저장, 동일한 백엔드 API 사용
+- **API 키 + Rate limiting**: 사용자별 발급/폐기 (`/admin/api-keys`)
+  - `X-API-Key: wg_…` 헤더로 모든 API 호출 가능 (JWT 대체)
+  - 인메모리 토큰 버킷 분당 제한 (기본 240, 환경변수 `RATE_LIMIT_PER_MINUTE`)
+- **공급망 레저** (`/admin/ledger`): 입출고 등 모든 이벤트를 SHA256 해시 체인에 append
+  - 각 row는 `prev_hash` + `this_hash`, 위변조 시 `verify` 엔드포인트가 검출
+  - `POST /api/ledger/anchor`로 외부 블록체인 노타리제이션 옵션 제공
+- **영수증 OCR** (`/admin/ocr`): 이미지 업로드 → tesseract → 품목/수량/단가 파싱
+  - `create_items=true` 시 manager 권한으로 재고 자동 등록
+  - tesseract 미설치 시 503 (graceful degradation)
+- **재고 예측 (시계열)** (`/admin/forecast`): 7일 이동평균 + 선형 추세
+  - 일별 출고 이력 → 14일 예측 → 잔여 일수 / 권장 재주문량 자동 산출
 - **WellGreen 브랜딩**: Tailwind `brand` 팔레트 (green-600 계열), 🌱 로고
   - 시드 데이터: 라들러/필스너/바이젠/콜라/스파클링워터/감자칩 등 F&B 제품
   - 테넌트: 웰그린 코리아 / 웰그린 라들러 / 트루웰 물류

@@ -59,6 +59,27 @@ def create_movement(db: Session, payload: StockMovementCreate) -> StockMovement:
     db.add(movement)
     db.commit()
     db.refresh(movement)
+
+    # Append a tamper-evident ledger entry for supply-chain traceability.
+    try:
+        from app.modules.ledger import service as ledger_service
+
+        ledger_service.append(
+            db,
+            event_type=f"stock_{payload.type.value}",
+            resource_type="item",
+            resource_id=item.id,
+            payload={
+                "movement_id": movement.id,
+                "sku": item.sku,
+                "quantity": float(qty),
+                "lot_id": payload.lot_id,
+                "new_stock_qty": float(item.stock_qty),
+            },
+        )
+    except Exception:
+        pass
+
     return movement
 
 
