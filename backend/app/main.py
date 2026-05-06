@@ -21,11 +21,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Import all module models so SQLAlchemy is aware before create_all
+    # Import all module models so SQLAlchemy is aware of them
     for module_name in MODULES:
         import_module(f"app.modules.{module_name}.models")
 
-    Base.metadata.create_all(bind=engine)
+    # Auto-create tables only when AUTO_CREATE_TABLES=1 (PoC dev mode).
+    # In production, use Alembic migrations instead.
+    if settings.auto_create_tables:
+        Base.metadata.create_all(bind=engine)
 
     for module_name in MODULES:
         module = import_module(f"app.modules.{module_name}.router")

@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24
     cors_origins: list[str] = ["http://localhost:3000"]
+    auto_create_tables: bool = True  # PoC default; set False when using Alembic in prod
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

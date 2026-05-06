@@ -3,10 +3,12 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { MODULES } from "@/lib/modules";
 import { clearToken } from "@/lib/api";
+import { useMe } from "@/lib/auth";
 
 export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
+  const me = useMe();
 
   const handleLogout = () => {
     clearToken();
@@ -18,6 +20,15 @@ export default function Sidebar() {
       <div className="px-4 py-5 text-xl font-semibold border-b border-slate-700">
         ERP System
       </div>
+      {me && (
+        <div className="px-4 py-3 text-xs border-b border-slate-700">
+          <div className="text-slate-300">{me.full_name}</div>
+          <div className="text-slate-500">{me.email}</div>
+          <span className="inline-block mt-1 px-2 py-0.5 rounded bg-slate-700 text-slate-100 uppercase">
+            {me.role}
+          </span>
+        </div>
+      )}
       <nav className="flex-1 py-4">
         <Link
           href="/"

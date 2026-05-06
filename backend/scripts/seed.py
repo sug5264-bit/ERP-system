@@ -2,7 +2,7 @@
 from app.core.db import SessionLocal
 from app.core.security import hash_password
 from app.main import create_app  # ensures tables created
-from app.modules.auth.models import User
+from app.modules.auth.models import Role, User
 from app.modules.finance.models import Account, AccountType
 from app.modules.hr.models import Department, Employee
 from app.modules.inventory.models import Item
@@ -13,15 +13,22 @@ create_app()
 def run() -> None:
     db = SessionLocal()
     try:
-        if not db.query(User).filter(User.email == "admin@example.com").first():
-            db.add(
-                User(
-                    email="admin@example.com",
-                    full_name="Admin",
-                    hashed_password=hash_password("admin1234"),
-                    is_admin=True,
+        default_users = [
+            ("admin@example.com", "Admin", Role.admin, "admin1234"),
+            ("manager@example.com", "Manager", Role.manager, "password1234"),
+            ("staff@example.com", "Staff", Role.staff, "password1234"),
+            ("viewer@example.com", "Viewer", Role.viewer, "password1234"),
+        ]
+        for email, name, role, pw in default_users:
+            if not db.query(User).filter(User.email == email).first():
+                db.add(
+                    User(
+                        email=email,
+                        full_name=name,
+                        hashed_password=hash_password(pw),
+                        role=role,
+                    )
                 )
-            )
 
         if not db.query(Department).first():
             db.add_all(

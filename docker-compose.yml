@@ -1,16 +1,35 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: erp
+      POSTGRES_PASSWORD: erp
+      POSTGRES_DB: erp
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U erp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   backend:
     build: ./backend
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: sqlite:////data/erp.db
+      DATABASE_URL: postgresql+psycopg2://erp:erp@db:5432/erp
       JWT_SECRET: dev-secret-change-me
       CORS_ORIGINS: '["http://localhost:3000"]'
-    volumes:
-      - backend_data:/data
+      AUTO_CREATE_TABLES: "0"
+    depends_on:
+      db:
+        condition: service_healthy
     command: >
-      sh -c "python scripts/seed.py &&
+      sh -c "alembic upgrade head &&
+             python scripts/seed.py &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
   frontend:
@@ -23,4 +42,4 @@ services:
       - backend
 
 volumes:
-  backend_data:
+  db_data:

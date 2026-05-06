@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, require_role
 from app.core.db import get_db
 from app.modules.inventory import service
 from app.modules.inventory.schemas import (
@@ -23,7 +23,11 @@ def list_items(db: Session = Depends(get_db)):
     return service.list_items(db)
 
 
-@router.post("/items", response_model=ItemOut)
+@router.post(
+    "/items",
+    response_model=ItemOut,
+    dependencies=[Depends(require_role("admin"))],
+)
 def create_item(payload: ItemCreate, db: Session = Depends(get_db)):
     return service.create_item(db, payload)
 
@@ -33,7 +37,11 @@ def list_movements(db: Session = Depends(get_db)):
     return service.list_movements(db)
 
 
-@router.post("/movements", response_model=StockMovementOut)
+@router.post(
+    "/movements",
+    response_model=StockMovementOut,
+    dependencies=[Depends(require_role("staff"))],
+)
 def create_movement(payload: StockMovementCreate, db: Session = Depends(get_db)):
     try:
         return service.create_movement(db, payload)

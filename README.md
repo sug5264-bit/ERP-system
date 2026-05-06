@@ -4,9 +4,9 @@
 
 ## 스택
 
-- **Backend**: FastAPI + SQLAlchemy 2.0 + SQLite (PoC), Postgres 전환 가능
+- **Backend**: FastAPI + SQLAlchemy 2.0 + Postgres (Alembic 마이그레이션) / SQLite (로컬)
 - **Frontend**: Next.js 14 (App Router) + TypeScript + Tailwind
-- **Auth**: JWT (Bearer)
+- **Auth**: JWT (Bearer) + RBAC (admin / manager / staff / viewer)
 - **구조**: Modular Monolith — 추후 모듈 추가가 용이
 
 ## 모듈
@@ -57,16 +57,37 @@ docker compose up --build
 
 - Backend: http://localhost:8000 (Swagger: `/docs`)
 - Frontend: http://localhost:3000
-- 기본 계정: `admin@example.com` / `admin1234`
+- Postgres: localhost:5432 (erp / erp)
+- 기본 계정 (모두 비밀번호 `password1234`, admin만 `admin1234`):
+  - `admin@example.com` (admin) — 시스템/마스터 데이터 모두 가능
+  - `manager@example.com` (manager) — 직원 추가, 전표 작성, 주문 확정
+  - `staff@example.com` (staff) — 입출고, 고객/주문 생성
+  - `viewer@example.com` (viewer) — 읽기 전용
 
 ### 로컬 실행
 
-**Backend**
+**Backend (SQLite, 빠른 시작)**
 ```bash
 cd backend
 pip install -r requirements.txt
-python scripts/seed.py            # 초기 데이터 + admin 계정
+python scripts/seed.py            # 자동 create_all + 초기 데이터
 uvicorn app.main:app --reload
+```
+
+**Backend (Postgres + Alembic, 운영 권장)**
+```bash
+cd backend
+export DATABASE_URL=postgresql+psycopg2://erp:erp@localhost:5432/erp
+export AUTO_CREATE_TABLES=0
+alembic upgrade head               # 마이그레이션 적용
+python scripts/seed.py             # 초기 데이터
+uvicorn app.main:app --reload
+```
+
+**스키마 변경 시 새 마이그레이션 생성**
+```bash
+alembic revision --autogenerate -m "add new column"
+alembic upgrade head
 ```
 
 **Frontend**
@@ -126,10 +147,29 @@ Backend가 실행 중일 때 자동 생성된 OpenAPI 문서:
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
 
+## RBAC 권한
+
+`User.role` 필드로 4단계 역할 (admin > manager > staff > viewer)을 관리합니다.
+
+| 작업 | 필요 역할 |
+|---|---|
+| 모든 모듈 조회 | staff 이상 |
+| 입출고, 고객/주문 생성 | staff 이상 |
+| 직원 추가/수정, 전표 작성, 주문 확정 | manager 이상 |
+| 마스터 데이터 (계정과목, 부서, 품목) | admin |
+
+엔드포인트에 권한을 걸려면:
+
+```python
+from app.core.auth import require_role
+
+@router.post("/x", dependencies=[Depends(require_role("manager"))])
+def create_x(...): ...
+```
+
 ## 추후 확장 아이디어
 
 - 구매(Purchase), 제조(Production), 프로젝트(Project), 자산(Asset) 모듈
-- Postgres + Alembic 마이그레이션
-- 역할 기반 권한 (RBAC)
 - 모바일 앱 (동일 JWT API 재사용)
 - 외부 시스템 연동 (Webhook, OAuth2 client credentials)
+- 감사 로그(Audit log), 다국어(i18n)
