@@ -15,8 +15,8 @@ export default function Orders() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api<Order[]>("/api/sales/orders")
-      .then(setOrders)
+    api<{ items: Order[] }>("/api/sales/orders?page=1&size=50")
+      .then((r) => setOrders(r.items))
       .catch((e) => setError(String(e)));
   }, []);
 

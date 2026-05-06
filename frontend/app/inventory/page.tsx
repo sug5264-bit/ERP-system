@@ -3,7 +3,8 @@ import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
 import ExportMenu from "@/components/ExportMenu";
-import { api } from "@/lib/api";
+import Pager from "@/components/Pager";
+import { Page, api } from "@/lib/api";
 import { useCurrency } from "@/lib/currency";
 
 type Item = {
@@ -40,11 +41,18 @@ export default function InventoryPage() {
     serial_number: "",
   });
 
-  const load = async () => setItems(await api<Item[]>("/api/inventory/items"));
+  const [page, setPage] = useState(1);
+  const [meta, setMeta] = useState({ total: 0, pages: 1 });
+
+  const load = async () => {
+    const res = await api<Page<Item>>(`/api/inventory/items?page=${page}&size=20`);
+    setItems(res.items);
+    setMeta({ total: res.total, pages: res.pages });
+  };
 
   useEffect(() => {
     load().catch((e) => setError(String(e)));
-  }, []);
+  }, [page]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -189,6 +197,7 @@ export default function InventoryPage() {
         ]}
         rows={items}
       />
+      <Pager page={page} pages={meta.pages} total={meta.total} onChange={setPage} />
 
       {lotsItem && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-30">

@@ -3,6 +3,7 @@
 Sample data is themed after a beverage / F&B distribution company:
 음료, 라들러, 수입맥주, 스낵 + 편의점/유통사 고객.
 """
+from app.core.config import settings
 from app.core.db import SessionLocal
 from app.core.security import hash_password
 from app.main import create_app  # ensures tables created
@@ -21,23 +22,30 @@ def run() -> None:
     db = SessionLocal()
     try:
         # Users -----------------------------------------------------------------
-        default_users = [
-            ("admin@wellgreen.com", "관리자", Role.admin, "admin1234"),
-            ("manager@wellgreen.com", "김영업", Role.manager, "password1234"),
-            ("staff@wellgreen.com", "이실무", Role.staff, "password1234"),
-            ("viewer@wellgreen.com", "박조회", Role.viewer, "password1234"),
-        ]
-        for email, name, role, pw in default_users:
-            if not db.query(User).filter(User.email == email).first():
-                db.add(
-                    User(
-                        email=email,
-                        full_name=name,
-                        hashed_password=hash_password(pw),
-                        role=role,
-                    )
+        if not settings.seed_demo_users:
+            print("seed_demo_users=false; skipping demo accounts.")
+        else:
+            if settings.is_production:
+                raise RuntimeError(
+                    "Refusing to seed demo users in production. Set SEED_DEMO_USERS=false."
                 )
-        db.flush()
+            default_users = [
+                ("admin@wellgreen.com", "관리자", Role.admin, "admin1234"),
+                ("manager@wellgreen.com", "김영업", Role.manager, "password1234"),
+                ("staff@wellgreen.com", "이실무", Role.staff, "password1234"),
+                ("viewer@wellgreen.com", "박조회", Role.viewer, "password1234"),
+            ]
+            for email, name, role, pw in default_users:
+                if not db.query(User).filter(User.email == email).first():
+                    db.add(
+                        User(
+                            email=email,
+                            full_name=name,
+                            hashed_password=hash_password(pw),
+                            role=role,
+                        )
+                    )
+            db.flush()
 
         # Tenants (multi-tenancy) ----------------------------------------------
         if not db.query(Tenant).first():
@@ -47,8 +55,9 @@ def run() -> None:
             db.add_all([t1, t2, t3])
             db.flush()
             admin = db.query(User).filter(User.email == "admin@wellgreen.com").first()
-            for t in (t1, t2, t3):
-                db.add(UserTenant(user_id=admin.id, tenant_id=t.id, is_default=(t is t1)))
+            if admin:
+                for t in (t1, t2, t3):
+                    db.add(UserTenant(user_id=admin.id, tenant_id=t.id, is_default=(t is t1)))
 
         # Departments -----------------------------------------------------------
         if not db.query(Department).first():

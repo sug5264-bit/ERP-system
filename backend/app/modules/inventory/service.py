@@ -27,13 +27,26 @@ def list_movements(db: Session) -> list[StockMovement]:
 
 
 def create_movement(db: Session, payload: StockMovementCreate) -> StockMovement:
-    item = get_item(db, payload.item_id)
+    # Lock the item row so concurrent movements serialize on it.
+    # On Postgres this becomes SELECT ... FOR UPDATE; on SQLite it's a no-op
+    # but the BEGIN IMMEDIATE transaction still serializes writers.
+    item = (
+        db.query(Item)
+        .filter(Item.id == payload.item_id)
+        .with_for_update()
+        .first()
+    )
     if not item:
         raise ValueError("Item not found")
 
     lot: StockLot | None = None
     if payload.lot_id:
-        lot = db.query(StockLot).filter(StockLot.id == payload.lot_id, StockLot.item_id == item.id).first()
+        lot = (
+            db.query(StockLot)
+            .filter(StockLot.id == payload.lot_id, StockLot.item_id == item.id)
+            .with_for_update()
+            .first()
+        )
         if not lot:
             raise ValueError("Lot not found for this item")
 

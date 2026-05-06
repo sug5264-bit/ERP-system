@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.auth import get_current_user, require_module_role
 from app.core.db import get_db
+from app.core.pagination import Page, PageParams, paginate
 from app.modules.finance import service
+from app.modules.finance.models import JournalEntry
 from app.modules.finance.schemas import (
     AccountCreate,
     AccountOut,
@@ -32,9 +34,16 @@ def create_account(payload: AccountCreate, db: Session = Depends(get_db)):
     return service.create_account(db, payload)
 
 
-@router.get("/journal-entries", response_model=list[JournalEntryOut])
-def list_journal_entries(db: Session = Depends(get_db)):
-    return service.list_journal_entries(db)
+@router.get("/journal-entries", response_model=Page[JournalEntryOut])
+def list_journal_entries(
+    params: PageParams = Depends(), db: Session = Depends(get_db)
+):
+    q = (
+        db.query(JournalEntry)
+        .options(selectinload(JournalEntry.lines))
+        .order_by(JournalEntry.entry_date.desc())
+    )
+    return paginate(q, params)
 
 
 @router.post(

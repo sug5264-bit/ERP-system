@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.auth import get_current_user, require_module_role
 from app.core.db import get_db
 from app.core.exports import export_table
+from app.core.pagination import Page, PageParams, paginate
 from app.modules.hr import service
+from app.modules.hr.models import Employee
 from app.modules.hr.schemas import (
     DepartmentCreate,
     DepartmentOut,
@@ -34,9 +36,14 @@ def create_department(payload: DepartmentCreate, db: Session = Depends(get_db)):
     return service.create_department(db, payload)
 
 
-@router.get("/employees", response_model=list[EmployeeOut])
-def list_employees(db: Session = Depends(get_db)):
-    return service.list_employees(db)
+@router.get("/employees", response_model=Page[EmployeeOut])
+def list_employees(params: PageParams = Depends(), db: Session = Depends(get_db)):
+    q = (
+        db.query(Employee)
+        .options(selectinload(Employee.department))
+        .order_by(Employee.employee_no)
+    )
+    return paginate(q, params)
 
 
 @router.get("/employees/export")

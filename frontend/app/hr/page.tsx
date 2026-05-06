@@ -4,7 +4,8 @@ import AppShell from "@/components/AppShell";
 import Attachments from "@/components/Attachments";
 import DataTable from "@/components/DataTable";
 import ExportMenu from "@/components/ExportMenu";
-import { api } from "@/lib/api";
+import Pager from "@/components/Pager";
+import { Page, api } from "@/lib/api";
 import { hasRole, useMe } from "@/lib/auth";
 
 type Employee = {
@@ -30,13 +31,18 @@ export default function HRPage() {
   const [error, setError] = useState("");
   const [attachFor, setAttachFor] = useState<Employee | null>(null);
 
+  const [page, setPage] = useState(1);
+  const [meta, setMeta] = useState({ total: 0, pages: 1 });
+
   const load = async () => {
-    setEmployees(await api<Employee[]>("/api/hr/employees"));
+    const res = await api<Page<Employee>>(`/api/hr/employees?page=${page}&size=20`);
+    setEmployees(res.items);
+    setMeta({ total: res.total, pages: res.pages });
   };
 
   useEffect(() => {
     load().catch((e) => setError(String(e)));
-  }, []);
+  }, [page]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -133,6 +139,7 @@ export default function HRPage() {
         ]}
         rows={employees}
       />
+      <Pager page={page} pages={meta.pages} total={meta.total} onChange={setPage} />
 
       {attachFor && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-30">

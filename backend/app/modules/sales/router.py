@@ -1,12 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.auth import get_current_user, require_module_role
 from app.core.db import get_db
 from app.core.exports import export_table
+from app.core.pagination import Page, PageParams, paginate
 from app.core.rls import can_access, scope_to_owner
 from app.modules.auth.models import User
 from app.modules.sales import service
+from app.modules.sales.models import Customer, SalesOrder
 from app.modules.sales.schemas import (
     CustomerCreate,
     CustomerOut,
@@ -32,13 +34,15 @@ def _scoped_filter(user: User, tenant_id: int | None):
     return apply
 
 
-@router.get("/customers", response_model=list[CustomerOut])
+@router.get("/customers", response_model=Page[CustomerOut])
 def list_customers(
+    params: PageParams = Depends(),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     tenant_id: int | None = Depends(get_current_tenant_id),
 ):
-    return service.list_customers(db, query_filter=_scoped_filter(user, tenant_id))
+    q = _scoped_filter(user, tenant_id)(db.query(Customer), Customer).order_by(Customer.name)
+    return paginate(q, params)
 
 
 @router.post(
@@ -55,13 +59,19 @@ def create_customer(
     return service.create_customer(db, payload, owner_id=user.id, tenant_id=tenant_id)
 
 
-@router.get("/orders", response_model=list[SalesOrderOut])
+@router.get("/orders", response_model=Page[SalesOrderOut])
 def list_orders(
+    params: PageParams = Depends(),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     tenant_id: int | None = Depends(get_current_tenant_id),
 ):
-    return service.list_orders(db, query_filter=_scoped_filter(user, tenant_id))
+    q = (
+        _scoped_filter(user, tenant_id)(db.query(SalesOrder), SalesOrder)
+        .options(selectinload(SalesOrder.customer), selectinload(SalesOrder.items))
+        .order_by(SalesOrder.order_date.desc())
+    )
+    return paginate(q, params)
 
 
 @router.get("/orders/export")

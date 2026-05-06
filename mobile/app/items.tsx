@@ -15,8 +15,8 @@ export default function Items() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api<Item[]>("/api/inventory/items")
-      .then(setItems)
+    api<{ items: Item[] }>("/api/inventory/items?page=1&size=50")
+      .then((r) => setItems(r.items))
       .catch((e) => setError(String(e)));
   }, []);
 

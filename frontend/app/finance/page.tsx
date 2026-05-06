@@ -30,10 +30,10 @@ export default function FinancePage() {
   const load = async () => {
     const [a, e] = await Promise.all([
       api<Account[]>("/api/finance/accounts"),
-      api<JournalEntry[]>("/api/finance/journal-entries"),
+      api<{ items: JournalEntry[] }>("/api/finance/journal-entries?page=1&size=50"),
     ]);
     setAccounts(a);
-    setEntries(e);
+    setEntries(e.items);
   };
 
   useEffect(() => {

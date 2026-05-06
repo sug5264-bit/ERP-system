@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import require_role
 from app.core.db import get_db
 from app.core.exports import export_table
+from app.core.pagination import Page, PageParams, paginate
 from app.modules.audit.models import AuditLog
 from app.modules.audit.schemas import AuditLogOut
 
@@ -16,10 +17,9 @@ router = APIRouter(
 )
 
 
-@router.get("/logs", response_model=list[AuditLogOut])
+@router.get("/logs", response_model=Page[AuditLogOut])
 def list_logs(
-    limit: int = Query(100, le=500),
-    offset: int = 0,
+    params: PageParams = Depends(),
     user_email: str | None = None,
     method: str | None = None,
     path: str | None = None,
@@ -41,7 +41,7 @@ def list_logs(
         q = q.filter(AuditLog.created_at >= since)
     if until:
         q = q.filter(AuditLog.created_at <= until)
-    return q.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit).all()
+    return paginate(q.order_by(AuditLog.created_at.desc()), params)
 
 
 @router.get("/logs/export")

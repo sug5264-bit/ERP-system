@@ -55,7 +55,13 @@ def decide(
     approve: bool,
     comment: str | None = None,
 ) -> ApprovalRequest:
-    req = get_request(db, request_id)
+    # Lock the request row so concurrent approve/reject serialize.
+    req = (
+        db.query(ApprovalRequest)
+        .filter(ApprovalRequest.id == request_id)
+        .with_for_update()
+        .first()
+    )
     if not req:
         raise ValueError("Approval request not found")
     if req.status != ApprovalStatus.pending:

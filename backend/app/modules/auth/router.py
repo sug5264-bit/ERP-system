@@ -1,4 +1,5 @@
 import secrets
+from datetime import datetime
 from urllib.parse import urlencode
 
 import httpx
@@ -10,11 +11,24 @@ from sqlalchemy.orm import Session
 from app.core.auth import effective_role, get_current_user, hash_api_key, require_role
 from app.core.config import settings
 from app.core.db import get_db
-from app.core.security import create_access_token, hash_password, verify_password
-from app.modules.auth.models import ApiKey, Role, User, UserModulePermission
+from app.core.security import (
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    hash_password,
+    verify_password,
+)
+from app.modules.auth.models import (
+    ApiKey,
+    RefreshToken,
+    Role,
+    User,
+    UserModulePermission,
+)
 from app.modules.auth.schemas import (
     ModulePermissionIn,
     ModulePermissionOut,
+    RefreshIn,
     Token,
     UserCreate,
     UserOut,
@@ -41,16 +55,83 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
     return user
 
 
+def _issue_tokens(db: Session, user: User, user_agent: str | None = None) -> Token:
+    access = create_access_token(subject=str(user.id))
+    jti = secrets.token_urlsafe(16)
+    refresh, expire = create_refresh_token(subject=str(user.id), jti=jti)
+    db.add(
+        RefreshToken(
+            user_id=user.id,
+            token_hash=hash_api_key(refresh),
+            expires_at=expire.replace(tzinfo=None),
+            user_agent=(user_agent or "")[:500],
+        )
+    )
+    db.commit()
+    return Token(
+        access_token=access,
+        refresh_token=refresh,
+        expires_in=settings.access_token_expire_minutes * 60,
+        user=UserOut.model_validate(user),
+    )
+
+
 @router.post("/login", response_model=Token)
-def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login(
+    form: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
     user = db.query(User).filter(User.email == form.username).first()
     if not user or not verify_password(form.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
         )
-    token = create_access_token(subject=str(user.id))
-    return Token(access_token=token, user=UserOut.model_validate(user))
+    return _issue_tokens(db, user)
+
+
+@router.post("/refresh", response_model=Token)
+def refresh(payload: RefreshIn, db: Session = Depends(get_db)):
+    from jose import JWTError
+
+    try:
+        decoded = decode_token(payload.refresh_token)
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    if decoded.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="Not a refresh token")
+
+    record = (
+        db.query(RefreshToken)
+        .filter(RefreshToken.token_hash == hash_api_key(payload.refresh_token))
+        .first()
+    )
+    if not record or record.revoked:
+        raise HTTPException(status_code=401, detail="Refresh token revoked")
+    if record.expires_at and record.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+
+    user = db.query(User).filter(User.id == record.user_id, User.is_active.is_(True)).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User inactive")
+
+    # Rotate: revoke old refresh, issue a new pair (defends against replay).
+    record.revoked = True
+    db.commit()
+    return _issue_tokens(db, user)
+
+
+@router.post("/logout")
+def logout(payload: RefreshIn, db: Session = Depends(get_db)):
+    record = (
+        db.query(RefreshToken)
+        .filter(RefreshToken.token_hash == hash_api_key(payload.refresh_token))
+        .first()
+    )
+    if record:
+        record.revoked = True
+        db.commit()
+    return {"ok": True}
 
 
 @router.get("/me", response_model=UserOut)

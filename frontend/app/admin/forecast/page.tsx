@@ -24,10 +24,10 @@ export default function ForecastPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api<Item[]>("/api/inventory/items")
-      .then((xs) => {
-        setItems(xs);
-        if (xs[0]) setItemId(String(xs[0].id));
+    api<{ items: Item[] }>("/api/inventory/items?page=1&size=200")
+      .then((r) => {
+        setItems(r.items);
+        if (r.items[0]) setItemId(String(r.items[0].id));
       })
       .catch((e) => setError(String(e)));
   }, []);

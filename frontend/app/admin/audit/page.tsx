@@ -31,7 +31,7 @@ export default function AuditLogPage() {
   });
 
   const buildQuery = () => {
-    const p = new URLSearchParams({ limit: "200" });
+    const p = new URLSearchParams({ size: "200" });
     if (filters.user_email) p.append("user_email", filters.user_email);
     if (filters.method) p.append("method", filters.method);
     if (filters.path) p.append("path", filters.path);
@@ -40,8 +40,8 @@ export default function AuditLogPage() {
   };
 
   const load = () =>
-    api<Log[]>(`/api/audit/logs?${buildQuery()}`)
-      .then(setLogs)
+    api<{ items: Log[] }>(`/api/audit/logs?${buildQuery()}`)
+      .then((r) => setLogs(r.items))
       .catch((e) => setError(String(e)));
 
   useEffect(() => {
@@ -97,7 +97,7 @@ export default function AuditLogPage() {
             type="button"
             onClick={() => {
               setFilters({ user_email: "", method: "", path: "", status_code: "" });
-              api<Log[]>("/api/audit/logs?limit=200").then(setLogs);
+              api<{ items: Log[] }>("/api/audit/logs?size=200").then((r) => setLogs(r.items));
             }}
             className="px-3 py-1 border rounded text-sm"
           >

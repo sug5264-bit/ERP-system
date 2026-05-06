@@ -5,11 +5,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.audit_middleware import AuditMiddleware
-from app.core.config import settings
+from app.core.config import settings, validate_for_production
 from app.core.db import Base, SessionLocal, engine
 from app.core.rate_limit import RateLimitMiddleware
 
-# Modules to auto-register. Add a new entry here when introducing a new module.
 MODULES = [
     "auth",
     "hr",
@@ -30,6 +29,18 @@ MODULES = [
     "ocr",
     "forecast",
 ]
+
+
+def _redact(url: str) -> str:
+    """Hide password component in DB URLs for the health endpoint."""
+    if "@" not in url or "://" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    creds, host = rest.split("@", 1)
+    if ":" in creds:
+        user, _ = creds.split(":", 1)
+        return f"{scheme}://{user}:***@{host}"
+    return url
 
 
 def _run_due_schedules() -> None:
@@ -57,6 +68,17 @@ def _run_due_schedules() -> None:
 def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name)
 
+    issues = validate_for_production(settings)
+    if issues:
+        if settings.is_production:
+            raise RuntimeError(
+                "Refusing to start in production with insecure config:\n  - "
+                + "\n  - ".join(issues)
+            )
+        else:
+            for issue in issues:
+                print(f"⚠️  config: {issue}")
+
     app.add_middleware(AuditMiddleware)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(
@@ -67,12 +89,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Import all module models so SQLAlchemy is aware of them
     for module_name in MODULES:
         import_module(f"app.modules.{module_name}.models")
 
-    # Auto-create tables only when AUTO_CREATE_TABLES=1 (PoC dev mode).
-    # In production, use Alembic migrations instead.
     if settings.auto_create_tables:
         Base.metadata.create_all(bind=engine)
 
@@ -82,7 +101,6 @@ def create_app() -> FastAPI:
         if hasattr(module, "ws_router"):
             app.include_router(module.ws_router)
 
-    # GraphQL gateway (read-only)
     from app.core.graphql_app import graphql_router
     app.include_router(graphql_router, prefix="/graphql")
 
@@ -90,11 +108,55 @@ def create_app() -> FastAPI:
     def health():
         return {"status": "ok", "modules": MODULES}
 
+    @app.get("/api/health/detailed")
+    def health_detailed():
+        from sqlalchemy import text
+
+        result: dict = {
+            "status": "ok",
+            "environment": settings.environment,
+            "modules": MODULES,
+            "checks": {},
+        }
+        try:
+            db = SessionLocal()
+            try:
+                db.execute(text("SELECT 1"))
+                result["checks"]["database"] = {
+                    "ok": True,
+                    "url": _redact(settings.database_url),
+                }
+            finally:
+                db.close()
+        except Exception as exc:
+            result["status"] = "degraded"
+            result["checks"]["database"] = {"ok": False, "error": str(exc)}
+
+        try:
+            db = SessionLocal()
+            try:
+                row = db.execute(text("SELECT version_num FROM alembic_version")).first()
+                result["checks"]["migration"] = {
+                    "ok": bool(row),
+                    "version": row[0] if row else None,
+                }
+            finally:
+                db.close()
+        except Exception as exc:
+            result["checks"]["migration"] = {"ok": False, "error": str(exc)}
+
+        result["checks"]["scheduler"] = {"enabled": settings.scheduler_enabled}
+        result["checks"]["smtp"] = {"configured": bool(settings.smtp_host)}
+        result["checks"]["oauth_google"] = {"configured": bool(settings.google_client_id)}
+        return result
+
     if settings.scheduler_enabled:
         from apscheduler.schedulers.background import BackgroundScheduler
 
         scheduler = BackgroundScheduler()
-        scheduler.add_job(_run_due_schedules, "interval", minutes=settings.scheduler_interval_minutes)
+        scheduler.add_job(
+            _run_due_schedules, "interval", minutes=settings.scheduler_interval_minutes
+        )
 
         @app.on_event("startup")
         def _start_scheduler():

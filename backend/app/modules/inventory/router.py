@@ -4,7 +4,9 @@ from sqlalchemy.orm import Session
 from app.core.auth import get_current_user, require_module_role
 from app.core.db import get_db
 from app.core.exports import export_table
+from app.core.pagination import Page, PageParams, paginate
 from app.modules.inventory import service
+from app.modules.inventory.models import Item, StockMovement
 from app.modules.inventory.schemas import (
     ItemCreate,
     ItemOut,
@@ -21,9 +23,9 @@ router = APIRouter(
 )
 
 
-@router.get("/items", response_model=list[ItemOut])
-def list_items(db: Session = Depends(get_db)):
-    return service.list_items(db)
+@router.get("/items", response_model=Page[ItemOut])
+def list_items(params: PageParams = Depends(), db: Session = Depends(get_db)):
+    return paginate(db.query(Item).order_by(Item.sku), params)
 
 
 @router.get("/items/export")
@@ -53,9 +55,12 @@ def create_item(payload: ItemCreate, db: Session = Depends(get_db)):
     return service.create_item(db, payload)
 
 
-@router.get("/movements", response_model=list[StockMovementOut])
-def list_movements(db: Session = Depends(get_db)):
-    return service.list_movements(db)
+@router.get("/movements", response_model=Page[StockMovementOut])
+def list_movements(params: PageParams = Depends(), db: Session = Depends(get_db)):
+    return paginate(
+        db.query(StockMovement).order_by(StockMovement.moved_at.desc()),
+        params,
+    )
 
 
 @router.post(

@@ -54,3 +54,15 @@ class ApiKey(BaseEntity):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     rate_per_minute: Mapped[int] = mapped_column(Integer, default=60)
+
+
+class RefreshToken(BaseEntity):
+    """Server-side refresh token store. Lets us revoke individual sessions."""
+
+    __tablename__ = "refresh_tokens"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    user_agent: Mapped[str | None] = mapped_column(String(500))

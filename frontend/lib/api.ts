@@ -1,4 +1,5 @@
 const TOKEN_KEY = "erp_token";
+const REFRESH_KEY = "erp_refresh";
 const TENANT_KEY = "erp_tenant_id";
 
 export function getToken(): string | null {
@@ -10,8 +11,18 @@ export function setToken(token: string) {
   localStorage.setItem(TOKEN_KEY, token);
 }
 
+export function setRefreshToken(token: string) {
+  localStorage.setItem(REFRESH_KEY, token);
+}
+
+export function getRefreshToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(REFRESH_KEY);
+}
+
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(REFRESH_KEY);
 }
 
 function getTenantId(): string | null {
@@ -19,20 +30,59 @@ function getTenantId(): string | null {
   return localStorage.getItem(TENANT_KEY);
 }
 
+let refreshing: Promise<string | null> | null = null;
+
+async function tryRefresh(): Promise<string | null> {
+  if (refreshing) return refreshing;
+  const refresh = getRefreshToken();
+  if (!refresh) return null;
+  refreshing = (async () => {
+    try {
+      const res = await fetch("/api/auth/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refresh }),
+      });
+      if (!res.ok) {
+        clearToken();
+        return null;
+      }
+      const data = await res.json();
+      setToken(data.access_token);
+      setRefreshToken(data.refresh_token);
+      return data.access_token as string;
+    } finally {
+      refreshing = null;
+    }
+  })();
+  return refreshing;
+}
+
 export async function api<T = unknown>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const token = getToken();
   const tenantId = getTenantId();
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(options.headers as Record<string, string>),
+  const buildHeaders = (token: string | null) => {
+    const h: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...(options.headers as Record<string, string>),
+    };
+    if (token) h["Authorization"] = `Bearer ${token}`;
+    if (tenantId) h["X-Tenant-ID"] = tenantId;
+    return h;
   };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  if (tenantId) headers["X-Tenant-ID"] = tenantId;
 
-  const res = await fetch(path, { ...options, headers });
+  let token = getToken();
+  let res = await fetch(path, { ...options, headers: buildHeaders(token) });
+
+  // Auto-refresh on 401 once.
+  if (res.status === 401 && getRefreshToken()) {
+    const newToken = await tryRefresh();
+    if (newToken) {
+      res = await fetch(path, { ...options, headers: buildHeaders(newToken) });
+    }
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `${res.status} ${res.statusText}`);
@@ -86,5 +136,14 @@ export async function login(email: string, password: string) {
   if (!res.ok) throw new Error("Login failed");
   const data = await res.json();
   setToken(data.access_token);
+  if (data.refresh_token) setRefreshToken(data.refresh_token);
   return data;
 }
+
+export type Page<T> = {
+  items: T[];
+  total: number;
+  page: number;
+  size: number;
+  pages: number;
+};

@@ -3,7 +3,8 @@ import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
 import ExportMenu from "@/components/ExportMenu";
-import { api } from "@/lib/api";
+import Pager from "@/components/Pager";
+import { Page, api } from "@/lib/api";
 
 type Customer = { id: number; name: string; email: string | null; company: string | null };
 type Item = { id: number; sku: string; name: string; unit_price: string; stock_qty: string };
@@ -32,20 +33,27 @@ export default function SalesPage() {
   const [customerId, setCustomerId] = useState("");
   const [orderLines, setOrderLines] = useState<OrderLineDraft[]>([{ ...emptyLine }]);
 
+  const [orderPage, setOrderPage] = useState(1);
+  const [orderMeta, setOrderMeta] = useState({ total: 0, pages: 1 });
+  const [custPage, setCustPage] = useState(1);
+  const [custMeta, setCustMeta] = useState({ total: 0, pages: 1 });
+
   const load = async () => {
     const [c, i, o] = await Promise.all([
-      api<Customer[]>("/api/sales/customers"),
-      api<Item[]>("/api/inventory/items"),
-      api<Order[]>("/api/sales/orders"),
+      api<Page<Customer>>(`/api/sales/customers?page=${custPage}&size=20`),
+      api<Page<Item>>("/api/inventory/items?page=1&size=200"),
+      api<Page<Order>>(`/api/sales/orders?page=${orderPage}&size=20`),
     ]);
-    setCustomers(c);
-    setItems(i);
-    setOrders(o);
+    setCustomers(c.items);
+    setCustMeta({ total: c.total, pages: c.pages });
+    setItems(i.items);
+    setOrders(o.items);
+    setOrderMeta({ total: o.total, pages: o.pages });
   };
 
   useEffect(() => {
     load().catch((e) => setError(String(e)));
-  }, []);
+  }, [orderPage, custPage]);
 
   const addCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -281,9 +289,10 @@ export default function SalesPage() {
           ]}
           rows={customers}
         />
+        <Pager page={custPage} pages={custMeta.pages} total={custMeta.total} onChange={setCustPage} />
       </div>
 
-      <h2 className="text-lg font-medium mb-2">주문 ({orders.length})</h2>
+      <h2 className="text-lg font-medium mb-2">주문 ({orderMeta.total})</h2>
       <DataTable<Order>
         columns={[
           { key: "order_no", header: "주문번호" },
@@ -315,6 +324,12 @@ export default function SalesPage() {
         ]}
         rows={orders}
         empty="주문이 없습니다"
+      />
+      <Pager
+        page={orderPage}
+        pages={orderMeta.pages}
+        total={orderMeta.total}
+        onChange={setOrderPage}
       />
     </AppShell>
   );
