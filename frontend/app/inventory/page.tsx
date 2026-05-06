@@ -4,6 +4,7 @@ import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
 import ExportMenu from "@/components/ExportMenu";
 import { api } from "@/lib/api";
+import { useCurrency } from "@/lib/currency";
 
 type Item = {
   id: number;
@@ -14,10 +15,30 @@ type Item = {
   stock_qty: string;
 };
 
+type Lot = {
+  id: number;
+  item_id: number;
+  lot_number: string;
+  quantity: string;
+  expiry_date: string | null;
+  supplier: string | null;
+  serial_number: string | null;
+};
+
 export default function InventoryPage() {
+  const { format } = useCurrency();
   const [items, setItems] = useState<Item[]>([]);
   const [form, setForm] = useState({ sku: "", name: "", unit: "EA", unit_price: "0" });
   const [error, setError] = useState("");
+  const [lotsItem, setLotsItem] = useState<Item | null>(null);
+  const [lots, setLots] = useState<Lot[]>([]);
+  const [lotForm, setLotForm] = useState({
+    lot_number: "",
+    quantity: "0",
+    expiry_date: "",
+    supplier: "",
+    serial_number: "",
+  });
 
   const load = async () => setItems(await api<Item[]>("/api/inventory/items"));
 
@@ -49,6 +70,37 @@ export default function InventoryPage() {
         body: JSON.stringify({ item_id, type, quantity: Number(qty) }),
       });
       await load();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const openLots = async (item: Item) => {
+    setLotsItem(item);
+    setError("");
+    try {
+      setLots(await api<Lot[]>(`/api/inventory/items/${item.id}/lots`));
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const submitLot = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!lotsItem) return;
+    try {
+      await api(`/api/inventory/items/${lotsItem.id}/lots`, {
+        method: "POST",
+        body: JSON.stringify({
+          lot_number: lotForm.lot_number,
+          quantity: Number(lotForm.quantity),
+          expiry_date: lotForm.expiry_date || null,
+          supplier: lotForm.supplier || null,
+          serial_number: lotForm.serial_number || null,
+        }),
+      });
+      setLotForm({ lot_number: "", quantity: "0", expiry_date: "", supplier: "", serial_number: "" });
+      await openLots(lotsItem);
     } catch (e) {
       setError(String(e));
     }
@@ -102,7 +154,11 @@ export default function InventoryPage() {
           { key: "sku", header: "SKU" },
           { key: "name", header: "품목명" },
           { key: "unit", header: "단위" },
-          { key: "unit_price", header: "단가" },
+          {
+            key: "unit_price",
+            header: "단가",
+            render: (r) => format(Number(r.unit_price)),
+          },
           { key: "stock_qty", header: "재고" },
           {
             key: "actions",
@@ -121,12 +177,103 @@ export default function InventoryPage() {
                 >
                   출고
                 </button>
+                <button
+                  onClick={() => openLots(r)}
+                  className="px-2 py-1 bg-slate-700 text-white rounded text-xs"
+                >
+                  LOT
+                </button>
               </div>
             ),
           },
         ]}
         rows={items}
       />
+
+      {lotsItem && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-30">
+          <div className="bg-white rounded-lg p-6 w-[36rem] space-y-3 max-h-[80vh] overflow-y-auto">
+            <div className="flex justify-between items-center">
+              <h2 className="text-lg font-medium">
+                {lotsItem.sku} - {lotsItem.name} LOT
+              </h2>
+              <button
+                onClick={() => setLotsItem(null)}
+                className="text-slate-500 hover:text-slate-900"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={submitLot} className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <input
+                required
+                placeholder="LOT 번호"
+                value={lotForm.lot_number}
+                onChange={(e) => setLotForm({ ...lotForm, lot_number: e.target.value })}
+                className="border rounded px-2 py-1 text-sm"
+              />
+              <input
+                type="number"
+                placeholder="수량"
+                value={lotForm.quantity}
+                onChange={(e) => setLotForm({ ...lotForm, quantity: e.target.value })}
+                className="border rounded px-2 py-1 text-sm"
+              />
+              <input
+                type="date"
+                placeholder="유효기간"
+                value={lotForm.expiry_date}
+                onChange={(e) => setLotForm({ ...lotForm, expiry_date: e.target.value })}
+                className="border rounded px-2 py-1 text-sm"
+              />
+              <input
+                placeholder="공급사"
+                value={lotForm.supplier}
+                onChange={(e) => setLotForm({ ...lotForm, supplier: e.target.value })}
+                className="border rounded px-2 py-1 text-sm"
+              />
+              <input
+                placeholder="시리얼 번호"
+                value={lotForm.serial_number}
+                onChange={(e) => setLotForm({ ...lotForm, serial_number: e.target.value })}
+                className="border rounded px-2 py-1 text-sm"
+              />
+              <button className="bg-slate-900 text-white text-sm rounded">LOT 추가</button>
+            </form>
+
+            <table className="w-full text-sm">
+              <thead className="bg-slate-100">
+                <tr>
+                  <th className="text-left px-2 py-1">LOT</th>
+                  <th className="text-right px-2 py-1">수량</th>
+                  <th className="text-left px-2 py-1">유효기간</th>
+                  <th className="text-left px-2 py-1">공급사</th>
+                  <th className="text-left px-2 py-1">시리얼</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lots.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="text-center py-3 text-slate-500">
+                      LOT 없음
+                    </td>
+                  </tr>
+                )}
+                {lots.map((l) => (
+                  <tr key={l.id} className="border-t">
+                    <td className="px-2 py-1">{l.lot_number}</td>
+                    <td className="px-2 py-1 text-right">{l.quantity}</td>
+                    <td className="px-2 py-1">{l.expiry_date ?? "-"}</td>
+                    <td className="px-2 py-1">{l.supplier ?? "-"}</td>
+                    <td className="px-2 py-1">{l.serial_number ?? "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }

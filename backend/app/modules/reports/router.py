@@ -1,15 +1,17 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, require_role
 from app.core.db import get_db
 from app.modules.finance.models import Account, JournalLine
 from app.modules.hr.models import Department, Employee
 from app.modules.inventory.models import Item
+from app.modules.reports.models import Frequency, ReportSchedule, ReportType
 from app.modules.sales.models import OrderStatus, SalesOrder
 
 router = APIRouter(
@@ -119,3 +121,93 @@ def account_balances(db: Session = Depends(get_db)):
         }
         for acc_type, code, name, balance in rows
     ]
+
+
+# Scheduled reports ------------------------------------------------------
+
+
+class ReportScheduleIn(BaseModel):
+    name: str
+    report_type: ReportType
+    frequency: Frequency
+    recipients: str = ""
+    enabled: bool = True
+
+
+class ReportScheduleOut(BaseModel):
+    id: int
+    name: str
+    report_type: ReportType
+    frequency: Frequency
+    recipients: str
+    next_run_at: datetime | None
+    last_run_at: datetime | None
+    enabled: bool
+
+    class Config:
+        from_attributes = True
+
+
+def _next_run_for(freq: Frequency, base: datetime | None = None) -> datetime:
+    base = base or datetime.utcnow()
+    if freq == Frequency.daily:
+        return base + timedelta(days=1)
+    if freq == Frequency.weekly:
+        return base + timedelta(weeks=1)
+    return base + timedelta(days=30)
+
+
+@router.get(
+    "/schedules",
+    response_model=list[ReportScheduleOut],
+    dependencies=[Depends(require_role("manager"))],
+)
+def list_schedules(db: Session = Depends(get_db)):
+    return db.query(ReportSchedule).order_by(ReportSchedule.next_run_at).all()
+
+
+@router.post(
+    "/schedules",
+    response_model=ReportScheduleOut,
+    dependencies=[Depends(require_role("manager"))],
+)
+def create_schedule(payload: ReportScheduleIn, db: Session = Depends(get_db)):
+    s = ReportSchedule(
+        name=payload.name,
+        report_type=payload.report_type,
+        frequency=payload.frequency,
+        recipients=payload.recipients,
+        enabled=1 if payload.enabled else 0,
+        next_run_at=_next_run_for(payload.frequency),
+    )
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return s
+
+
+@router.delete(
+    "/schedules/{schedule_id}",
+    dependencies=[Depends(require_role("manager"))],
+)
+def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
+    s = db.query(ReportSchedule).filter(ReportSchedule.id == schedule_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Not found")
+    db.delete(s)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post(
+    "/schedules/{schedule_id}/run-now",
+    dependencies=[Depends(require_role("manager"))],
+)
+def run_now(schedule_id: int, db: Session = Depends(get_db)):
+    from app.modules.reports.service import run_schedule
+
+    s = db.query(ReportSchedule).filter(ReportSchedule.id == schedule_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Not found")
+    result = run_schedule(db, s)
+    return result

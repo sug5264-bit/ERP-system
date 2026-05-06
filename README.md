@@ -23,6 +23,7 @@
 | `attachments` | 첨부파일 | 모든 모듈 레코드에 파일 첨부 가능 |
 | `approvals` | 결재 워크플로 | 다단계 결재 (승인/반려/취소), 이메일 통보 |
 | `search` | 검색 | 모든 모듈 통합 검색 (직원/고객/품목/주문/계정/전표) |
+| `currencies` | 통화/환율 | 다중 통화 지원, 환율 변환 |
 
 ### 추가 기능
 - **i18n**: 한국어/영어 토글 (사이드바 상단 버튼)
@@ -48,6 +49,21 @@
 - **이메일 알림 (SMTP)**: 결재 요청 + 재고부족 일괄 발송
   - SMTP 미설정 시 stdout으로 로그 (개발 편의)
   - `POST /api/notifications/email-alerts` (admin)
+- **WebSocket 실시간 알림**: `/api/notifications/ws?token=...` 연결 시 결재 요청·승인·반려 푸시
+  - 프론트는 우상단 토스트로 표시, 자동 재연결
+- **다중 통화/환율**: KRW(base), USD, JPY 시드 + `/api/currencies/convert`
+  - 헤더 통화 선택기 → 모든 단가/금액이 선택 통화로 표시
+  - admin이 환율을 직접 입력/갱신 (날짜별)
+- **재고 LOT/Serial 추적**: 품목별 LOT (lot_number, 수량, 유효기간, 공급사, 시리얼)
+  - 입출고 시 lot_id 지정하면 lot 수량도 함께 조정
+  - 재고 페이지의 'LOT' 버튼으로 추가/조회
+- **예약 보고서**: APScheduler로 5분마다 due 체크 → PDF 생성 → 이메일 발송
+  - 빈도: daily / weekly / monthly, 수신자 콤마 구분
+  - "지금 실행" 버튼으로 즉시 발송 가능
+  - 생성된 PDF는 `uploads/`에 저장
+- **RLS (Record-level access)**: 영업 모듈에 적용 (`Customer.owner_id`, `SalesOrder.owner_id`)
+  - admin/manager는 전체 조회, staff/viewer는 자신이 만든 레코드만
+  - `app/core/rls.py`의 `scope_to_owner(query, model, user, module)` 헬퍼로 다른 모듈에도 동일 패턴 적용 가능
 
 ## 디렉토리 구조
 

@@ -3,6 +3,7 @@ from app.core.db import SessionLocal
 from app.core.security import hash_password
 from app.main import create_app  # ensures tables created
 from app.modules.auth.models import Role, User
+from app.modules.currencies.models import Currency, ExchangeRate
 from app.modules.finance.models import Account, AccountType
 from app.modules.hr.models import Department, Employee
 from app.modules.inventory.models import Item
@@ -55,6 +56,19 @@ def run() -> None:
                 [
                     Item(sku="SKU-001", name="Widget A", unit="EA", unit_price=10000, stock_qty=100),
                     Item(sku="SKU-002", name="Widget B", unit="EA", unit_price=20000, stock_qty=50),
+                ]
+            )
+
+        if not db.query(Currency).first():
+            krw = Currency(code="KRW", name="Korean Won", symbol="₩", is_base=True)
+            usd = Currency(code="USD", name="US Dollar", symbol="$")
+            jpy = Currency(code="JPY", name="Japanese Yen", symbol="¥")
+            db.add_all([krw, usd, jpy])
+            db.flush()
+            db.add_all(
+                [
+                    ExchangeRate(currency_id=usd.id, rate_to_base=1350),
+                    ExchangeRate(currency_id=jpy.id, rate_to_base=9.2),
                 ]
             )
 

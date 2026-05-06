@@ -21,6 +21,7 @@ class Customer(BaseEntity):
     email: Mapped[str | None] = mapped_column(String(255))
     phone: Mapped[str | None] = mapped_column(String(50))
     company: Mapped[str | None] = mapped_column(String(200))
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
 
 
 class SalesOrder(BaseEntity):
@@ -31,6 +32,7 @@ class SalesOrder(BaseEntity):
     order_date: Mapped[date] = mapped_column(Date, default=date.today)
     status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), default=OrderStatus.draft)
     total: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
 
     customer: Mapped[Customer] = relationship()
     items: Mapped[list["SalesOrderItem"]] = relationship(

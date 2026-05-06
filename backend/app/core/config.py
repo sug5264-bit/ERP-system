@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     smtp_from: str = "noreply@erp.local"
     smtp_use_tls: bool = True
 
+    # Scheduler
+    scheduler_enabled: bool = True
+    scheduler_interval_minutes: int = 5
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

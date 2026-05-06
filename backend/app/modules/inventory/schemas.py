@@ -1,9 +1,25 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel
 
 from app.modules.inventory.models import MovementType
+
+
+class StockLotIn(BaseModel):
+    lot_number: str
+    quantity: Decimal = Decimal("0")
+    expiry_date: date | None = None
+    supplier: str | None = None
+    serial_number: str | None = None
+
+
+class StockLotOut(StockLotIn):
+    id: int
+    item_id: int
+
+    class Config:
+        from_attributes = True
 
 
 class ItemBase(BaseModel):
@@ -27,6 +43,7 @@ class ItemOut(ItemBase):
 
 class StockMovementCreate(BaseModel):
     item_id: int
+    lot_id: int | None = None
     type: MovementType
     quantity: Decimal
     note: str | None = None
@@ -35,6 +52,7 @@ class StockMovementCreate(BaseModel):
 class StockMovementOut(BaseModel):
     id: int
     item_id: int
+    lot_id: int | None = None
     type: MovementType
     quantity: Decimal
     moved_at: datetime

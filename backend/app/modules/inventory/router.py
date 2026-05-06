@@ -8,6 +8,8 @@ from app.modules.inventory import service
 from app.modules.inventory.schemas import (
     ItemCreate,
     ItemOut,
+    StockLotIn,
+    StockLotOut,
     StockMovementCreate,
     StockMovementOut,
 )
@@ -66,3 +68,20 @@ def create_movement(payload: StockMovementCreate, db: Session = Depends(get_db))
         return service.create_movement(db, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/items/{item_id}/lots", response_model=list[StockLotOut])
+def list_lots(item_id: int, db: Session = Depends(get_db)):
+    return service.list_lots(db, item_id)
+
+
+@router.post(
+    "/items/{item_id}/lots",
+    response_model=StockLotOut,
+    dependencies=[Depends(require_module_role("inventory", "staff"))],
+)
+def create_lot(item_id: int, payload: StockLotIn, db: Session = Depends(get_db)):
+    try:
+        return service.create_lot(db, item_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))

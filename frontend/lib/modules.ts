@@ -14,6 +14,7 @@ export const MODULES: ModuleDef[] = [
   { key: "inventory", labelKey: "nav.inventory", href: "/inventory" },
   { key: "sales", labelKey: "nav.sales", href: "/sales" },
   { key: "approvals", labelKey: "nav.approvals", href: "/approvals" },
+  { key: "reports", labelKey: "nav.reports", href: "/reports" },
 ];
 
 export const ADMIN_MODULES: ModuleDef[] = [

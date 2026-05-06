@@ -1,34 +1,40 @@
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from app.modules.inventory import service as inventory_service
 from app.modules.sales.models import Customer, OrderStatus, SalesOrder, SalesOrderItem
 from app.modules.sales.schemas import CustomerCreate, SalesOrderCreate
 
 
-def list_customers(db: Session) -> list[Customer]:
-    return db.query(Customer).order_by(Customer.name).all()
+def list_customers(db: Session, query_filter=None) -> list[Customer]:
+    q: Query = db.query(Customer)
+    if query_filter is not None:
+        q = query_filter(q, Customer)
+    return q.order_by(Customer.name).all()
 
 
-def create_customer(db: Session, payload: CustomerCreate) -> Customer:
-    customer = Customer(**payload.model_dump())
+def create_customer(db: Session, payload: CustomerCreate, owner_id: int | None = None) -> Customer:
+    customer = Customer(**payload.model_dump(), owner_id=owner_id)
     db.add(customer)
     db.commit()
     db.refresh(customer)
     return customer
 
 
-def list_orders(db: Session) -> list[SalesOrder]:
-    return db.query(SalesOrder).order_by(SalesOrder.order_date.desc()).all()
+def list_orders(db: Session, query_filter=None) -> list[SalesOrder]:
+    q: Query = db.query(SalesOrder)
+    if query_filter is not None:
+        q = query_filter(q, SalesOrder)
+    return q.order_by(SalesOrder.order_date.desc()).all()
 
 
 def get_order(db: Session, order_id: int) -> SalesOrder | None:
     return db.query(SalesOrder).filter(SalesOrder.id == order_id).first()
 
 
-def create_order(db: Session, payload: SalesOrderCreate) -> SalesOrder:
+def create_order(db: Session, payload: SalesOrderCreate, owner_id: int | None = None) -> SalesOrder:
     total = sum(
         (Decimal(line.quantity) * Decimal(line.unit_price) for line in payload.items),
         Decimal("0"),
@@ -39,6 +45,7 @@ def create_order(db: Session, payload: SalesOrderCreate) -> SalesOrder:
         order_date=payload.order_date or date.today(),
         status=OrderStatus.draft,
         total=total,
+        owner_id=owner_id,
     )
     for line in payload.items:
         order.items.append(SalesOrderItem(**line.model_dump()))

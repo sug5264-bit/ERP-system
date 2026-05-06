@@ -1,11 +1,14 @@
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
+from jose import JWTError
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user, require_role
-from app.core.db import get_db
+from app.core.db import SessionLocal, get_db
 from app.core.email import send_email_safe
+from app.core.security import decode_token
+from app.core.ws import manager
 from app.modules.auth.models import User
 from app.modules.inventory.models import Item
 from app.modules.sales.models import OrderStatus, SalesOrder
@@ -91,3 +94,45 @@ def email_low_stock_alerts(
         if send_email_safe(admin.email, "[ERP] 재고 부족 알림", body):
             sent += 1
     return {"sent": sent, "items": len(items), "admins": len(admins)}
+
+
+ws_router = APIRouter(prefix="/api/notifications", tags=["notifications"])
+
+
+@ws_router.websocket("/ws")
+async def ws_notifications(websocket: WebSocket, token: str | None = None):
+    """WebSocket connection for live push notifications.
+
+    Auth via ?token=<jwt> query param.
+    """
+    if not token:
+        await websocket.close(code=4401)
+        return
+    try:
+        payload = decode_token(token)
+        user_id = int(payload.get("sub", 0))
+    except (JWTError, ValueError, TypeError):
+        await websocket.close(code=4401)
+        return
+    if not user_id:
+        await websocket.close(code=4401)
+        return
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or not user.is_active:
+            await websocket.close(code=4401)
+            return
+    finally:
+        db.close()
+
+    await manager.connect(user_id, websocket)
+    try:
+        await websocket.send_json({"type": "connected", "user_id": user_id})
+        while True:
+            await websocket.receive_text()  # ignore client messages (could be heartbeat)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await manager.disconnect(user_id, websocket)

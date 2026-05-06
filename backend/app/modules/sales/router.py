@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 from app.core.auth import get_current_user, require_module_role
 from app.core.db import get_db
 from app.core.exports import export_table
+from app.core.rls import can_access, scope_to_owner
+from app.modules.auth.models import User
 from app.modules.sales import service
 from app.modules.sales.schemas import (
     CustomerCreate,
@@ -20,8 +22,13 @@ router = APIRouter(
 
 
 @router.get("/customers", response_model=list[CustomerOut])
-def list_customers(db: Session = Depends(get_db)):
-    return service.list_customers(db)
+def list_customers(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return service.list_customers(
+        db, query_filter=lambda q, m: scope_to_owner(q, m, user, "sales")
+    )
 
 
 @router.post(
@@ -29,18 +36,33 @@ def list_customers(db: Session = Depends(get_db)):
     response_model=CustomerOut,
     dependencies=[Depends(require_module_role("sales", "staff"))],
 )
-def create_customer(payload: CustomerCreate, db: Session = Depends(get_db)):
-    return service.create_customer(db, payload)
+def create_customer(
+    payload: CustomerCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return service.create_customer(db, payload, owner_id=user.id)
 
 
 @router.get("/orders", response_model=list[SalesOrderOut])
-def list_orders(db: Session = Depends(get_db)):
-    return service.list_orders(db)
+def list_orders(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return service.list_orders(
+        db, query_filter=lambda q, m: scope_to_owner(q, m, user, "sales")
+    )
 
 
 @router.get("/orders/export")
-def export_orders(format: str = Query("csv"), db: Session = Depends(get_db)):
-    orders = service.list_orders(db)
+def export_orders(
+    format: str = Query("csv"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    orders = service.list_orders(
+        db, query_filter=lambda q, m: scope_to_owner(q, m, user, "sales")
+    )
     headers = ["주문번호", "일자", "고객", "상태", "총액"]
     rows = [
         [
@@ -60,8 +82,12 @@ def export_orders(format: str = Query("csv"), db: Session = Depends(get_db)):
     response_model=SalesOrderOut,
     dependencies=[Depends(require_module_role("sales", "staff"))],
 )
-def create_order(payload: SalesOrderCreate, db: Session = Depends(get_db)):
-    return service.create_order(db, payload)
+def create_order(
+    payload: SalesOrderCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return service.create_order(db, payload, owner_id=user.id)
 
 
 @router.post(
@@ -69,11 +95,16 @@ def create_order(payload: SalesOrderCreate, db: Session = Depends(get_db)):
     response_model=SalesOrderOut,
     dependencies=[Depends(require_module_role("sales", "manager"))],
 )
-def confirm_order(order_id: int, db: Session = Depends(get_db)):
+def confirm_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    order = service.get_order(db, order_id)
+    if not order or not can_access(order, user, "sales"):
+        raise HTTPException(status_code=404, detail="Order not found")
     try:
         order = service.confirm_order(db, order_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
     return order

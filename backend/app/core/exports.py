@@ -61,7 +61,8 @@ def _xlsx(rows, headers, filename) -> StreamingResponse:
     )
 
 
-def _pdf(rows, headers, filename) -> StreamingResponse:
+def render_pdf_bytes(rows, headers, title: str) -> bytes:
+    """Render a table as PDF and return raw bytes (for email attachments etc.)."""
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import getSampleStyleSheet
@@ -69,9 +70,9 @@ def _pdf(rows, headers, filename) -> StreamingResponse:
 
     rows_list = [list(r) for r in rows]
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), title=filename)
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), title=title)
     styles = getSampleStyleSheet()
-    story = [Paragraph(filename, styles["Title"]), Spacer(1, 12)]
+    story = [Paragraph(title, styles["Title"]), Spacer(1, 12)]
 
     data = [headers] + [[str(c) if c is not None else "" for c in r] for r in rows_list]
     table = Table(data, repeatRows=1)
@@ -90,9 +91,19 @@ def _pdf(rows, headers, filename) -> StreamingResponse:
     )
     story.append(table)
     doc.build(story)
-    buf.seek(0)
+    return buf.getvalue()
+
+
+def _pdf(rows, headers, filename) -> StreamingResponse:
+    pdf_bytes = render_pdf_bytes(rows, headers, filename)
+    # Filenames may contain non-latin characters; encode per RFC 5987.
+    from urllib.parse import quote
+    safe_filename = f"{filename}.pdf"
+    encoded = quote(safe_filename)
     return StreamingResponse(
-        buf,
+        io.BytesIO(pdf_bytes),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}.pdf"'},
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded}",
+        },
     )

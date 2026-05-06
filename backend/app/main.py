@@ -1,3 +1,4 @@
+from datetime import datetime
 from importlib import import_module
 
 from fastapi import FastAPI
@@ -5,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.audit_middleware import AuditMiddleware
 from app.core.config import settings
-from app.core.db import Base, engine
+from app.core.db import Base, SessionLocal, engine
 
 # Modules to auto-register. Add a new entry here when introducing a new module.
 MODULES = [
@@ -20,7 +21,30 @@ MODULES = [
     "attachments",
     "approvals",
     "search",
+    "currencies",
 ]
+
+
+def _run_due_schedules() -> None:
+    from app.modules.reports.models import ReportSchedule
+    from app.modules.reports.service import run_schedule
+
+    db = SessionLocal()
+    try:
+        now = datetime.utcnow()
+        due = (
+            db.query(ReportSchedule)
+            .filter(ReportSchedule.enabled == 1)
+            .filter(ReportSchedule.next_run_at <= now)
+            .all()
+        )
+        for s in due:
+            try:
+                run_schedule(db, s)
+            except Exception:
+                pass
+    finally:
+        db.close()
 
 
 def create_app() -> FastAPI:
@@ -47,10 +71,26 @@ def create_app() -> FastAPI:
     for module_name in MODULES:
         module = import_module(f"app.modules.{module_name}.router")
         app.include_router(module.router)
+        if hasattr(module, "ws_router"):
+            app.include_router(module.ws_router)
 
     @app.get("/api/health")
     def health():
         return {"status": "ok", "modules": MODULES}
+
+    if settings.scheduler_enabled:
+        from apscheduler.schedulers.background import BackgroundScheduler
+
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(_run_due_schedules, "interval", minutes=settings.scheduler_interval_minutes)
+
+        @app.on_event("startup")
+        def _start_scheduler():
+            scheduler.start()
+
+        @app.on_event("shutdown")
+        def _stop_scheduler():
+            scheduler.shutdown(wait=False)
 
     return app
 

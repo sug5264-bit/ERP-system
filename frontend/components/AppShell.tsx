@@ -1,5 +1,6 @@
 "use client";
 import AuthGate from "./AuthGate";
+import CurrencyPicker from "./CurrencyPicker";
 import NotificationsBell from "./NotificationsBell";
 import SearchBar from "./SearchBar";
 import Sidebar from "./Sidebar";
@@ -15,6 +16,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 px-6 py-2 flex items-center gap-3">
             <SearchBar />
             <div className="flex-1" />
+            <CurrencyPicker />
             <button
               onClick={toggle}
               className="px-2 py-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-sm"
