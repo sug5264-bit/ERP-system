@@ -27,6 +27,8 @@ class ApprovalRequestCreate(BaseModel):
     resource_type: str
     resource_id: int
     steps: list[ApprovalStepIn] = Field(min_length=1)
+    template_id: int | None = None
+    form_data: dict | None = None
 
 
 class ApprovalRequestOut(BaseModel):
@@ -38,6 +40,8 @@ class ApprovalRequestOut(BaseModel):
     status: ApprovalStatus
     current_step: int
     created_at: datetime
+    template_id: int | None = None
+    form_data: dict | None = None
     steps: list[ApprovalStepOut]
 
     class Config:
@@ -46,3 +50,37 @@ class ApprovalRequestOut(BaseModel):
 
 class ApprovalDecision(BaseModel):
     comment: str | None = None
+
+
+class FormFieldIn(BaseModel):
+    key: str
+    label: str
+    type: str  # text | number | date | select | textarea | checkbox
+    required: bool = False
+    options: list[str] | None = None
+
+
+class FormStepIn(BaseModel):
+    order: int
+    approver_id: int
+
+
+class FormTemplateIn(BaseModel):
+    code: str
+    name: str
+    description: str | None = None
+    schema_: list[FormFieldIn] = Field(default_factory=list, alias="schema")
+    default_steps: list[FormStepIn] = Field(default_factory=list)
+    is_active: bool = True
+
+    model_config = {"populate_by_name": True}
+
+
+class FormTemplateOut(BaseModel):
+    id: int
+    code: str
+    name: str
+    description: str | None
+    schema_: list[FormFieldIn]
+    default_steps: list[FormStepIn]
+    is_active: bool

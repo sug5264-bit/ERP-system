@@ -33,6 +33,8 @@ MODULES = [
     "ledger",
     "ocr",
     "forecast",
+    "suppliers",
+    "edi",
 ]
 
 

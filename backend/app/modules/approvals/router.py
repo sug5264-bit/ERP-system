@@ -1,17 +1,50 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, require_role
 from app.core.db import get_db
 from app.core.ws import manager as ws_manager
 from app.modules.approvals import service
-from app.modules.approvals.models import ApprovalStatus
+from app.modules.approvals.models import ApprovalFormTemplate, ApprovalStatus
 from app.modules.approvals.schemas import (
     ApprovalDecision,
     ApprovalRequestCreate,
     ApprovalRequestOut,
+    FormTemplateIn,
+    FormTemplateOut,
 )
 from app.modules.auth.models import User
+
+
+def _request_to_out(r) -> dict:
+    """Decode form_data JSON before returning."""
+    return {
+        "id": r.id,
+        "title": r.title,
+        "resource_type": r.resource_type,
+        "resource_id": r.resource_id,
+        "requester_id": r.requester_id,
+        "status": r.status,
+        "current_step": r.current_step,
+        "created_at": r.created_at,
+        "template_id": r.template_id,
+        "form_data": json.loads(r.form_data) if r.form_data else None,
+        "steps": r.steps,
+    }
+
+
+def _template_to_out(t: ApprovalFormTemplate) -> dict:
+    return {
+        "id": t.id,
+        "code": t.code,
+        "name": t.name,
+        "description": t.description,
+        "schema_": json.loads(t.schema or "[]"),
+        "default_steps": json.loads(t.default_steps or "[]"),
+        "is_active": t.is_active,
+    }
 
 router = APIRouter(
     prefix="/api/approvals",
@@ -28,10 +61,12 @@ def list_requests(
     current_user: User = Depends(get_current_user),
 ):
     if scope == "mine":
-        return service.list_requests(db, requester_id=current_user.id, status=status)
-    if scope == "inbox":
-        return service.list_requests(db, approver_id=current_user.id, status=status)
-    return service.list_requests(db, status=status)
+        rows = service.list_requests(db, requester_id=current_user.id, status=status)
+    elif scope == "inbox":
+        rows = service.list_requests(db, approver_id=current_user.id, status=status)
+    else:
+        rows = service.list_requests(db, status=status)
+    return [_request_to_out(r) for r in rows]
 
 
 @router.post("", response_model=ApprovalRequestOut)
@@ -66,7 +101,7 @@ def create_request(
     except Exception:
         pass
 
-    return req
+    return _request_to_out(req)
 
 
 def _notify_decision(req, action: str, current_user) -> None:
@@ -109,7 +144,7 @@ def approve(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     _notify_decision(req, "approved", current_user)
-    return req
+    return _request_to_out(req)
 
 
 @router.post("/{request_id}/reject", response_model=ApprovalRequestOut)
@@ -124,7 +159,7 @@ def reject(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     _notify_decision(req, "rejected", current_user)
-    return req
+    return _request_to_out(req)
 
 
 @router.post("/{request_id}/cancel", response_model=ApprovalRequestOut)
@@ -134,6 +169,82 @@ def cancel(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        return service.cancel(db, request_id, current_user.id)
+        req = service.cancel(db, request_id, current_user.id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    return _request_to_out(req)
+
+
+# ---- Form templates --------------------------------------------------------
+
+
+@router.get("/templates", response_model=list[FormTemplateOut])
+def list_templates(active_only: bool = True, db: Session = Depends(get_db)):
+    q = db.query(ApprovalFormTemplate)
+    if active_only:
+        q = q.filter(ApprovalFormTemplate.is_active.is_(True))
+    return [_template_to_out(t) for t in q.order_by(ApprovalFormTemplate.code).all()]
+
+
+@router.post(
+    "/templates",
+    response_model=FormTemplateOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def create_template(payload: FormTemplateIn, db: Session = Depends(get_db)):
+    if db.query(ApprovalFormTemplate).filter(ApprovalFormTemplate.code == payload.code).first():
+        raise HTTPException(status_code=400, detail="Code already exists")
+    t = ApprovalFormTemplate(
+        code=payload.code,
+        name=payload.name,
+        description=payload.description,
+        schema=json.dumps([f.model_dump() for f in payload.schema_], ensure_ascii=False),
+        default_steps=json.dumps([s.model_dump() for s in payload.default_steps]),
+        is_active=payload.is_active,
+    )
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    return _template_to_out(t)
+
+
+@router.put(
+    "/templates/{template_id}",
+    response_model=FormTemplateOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def update_template(
+    template_id: int, payload: FormTemplateIn, db: Session = Depends(get_db)
+):
+    t = (
+        db.query(ApprovalFormTemplate)
+        .filter(ApprovalFormTemplate.id == template_id)
+        .first()
+    )
+    if not t:
+        raise HTTPException(status_code=404, detail="Not found")
+    t.name = payload.name
+    t.description = payload.description
+    t.schema = json.dumps([f.model_dump() for f in payload.schema_], ensure_ascii=False)
+    t.default_steps = json.dumps([s.model_dump() for s in payload.default_steps])
+    t.is_active = payload.is_active
+    db.commit()
+    db.refresh(t)
+    return _template_to_out(t)
+
+
+@router.delete(
+    "/templates/{template_id}",
+    dependencies=[Depends(require_role("admin"))],
+)
+def delete_template(template_id: int, db: Session = Depends(get_db)):
+    t = (
+        db.query(ApprovalFormTemplate)
+        .filter(ApprovalFormTemplate.id == template_id)
+        .first()
+    )
+    if not t:
+        raise HTTPException(status_code=404, detail="Not found")
+    db.delete(t)
+    db.commit()
+    return {"ok": True}

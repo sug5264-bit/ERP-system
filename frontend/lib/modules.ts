@@ -14,6 +14,7 @@ export const MODULES: ModuleDef[] = [
   { key: "inventory", labelKey: "nav.inventory", href: "/inventory" },
   { key: "sales", labelKey: "nav.sales", href: "/sales" },
   { key: "approvals", labelKey: "nav.approvals", href: "/approvals" },
+  { key: "suppliers", labelKey: "nav.suppliers", href: "/suppliers" },
   { key: "reports", labelKey: "nav.reports", href: "/reports" },
 ];
 
@@ -55,5 +56,17 @@ export const ADMIN_MODULES: ModuleDef[] = [
     labelKey: "nav.admin.forecast",
     href: "/admin/forecast",
     minRole: "viewer",
+  },
+  {
+    key: "admin-form-templates",
+    labelKey: "nav.admin.formTemplates",
+    href: "/admin/form-templates",
+    minRole: "admin",
+  },
+  {
+    key: "admin-edi",
+    labelKey: "nav.admin.edi",
+    href: "/admin/edi",
+    minRole: "admin",
   },
 ];

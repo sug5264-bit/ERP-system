@@ -34,6 +34,8 @@
 | `ocr` | 영수증 OCR | tesseract 기반 텍스트 추출 + 품목 자동 등록 |
 | `forecast` | 재고 예측 | 7일 이동평균 + 선형 추세 → 권장 재주문 |
 | `api_keys` | API 키 + Rate limit | `X-API-Key` 인증, 토큰 버킷 분당 제한 |
+| `suppliers` | 공급사 / 발주 / 포털 | PO 상태머신 (draft→sent→ack→ship→received) |
+| `edi` | EDI / B2B | 인바운드 PO → SalesOrder 자동 변환, 아웃바운드 INVOIC |
 
 ### 추가 기능
 - **i18n**: 한국어/영어 토글 (사이드바 상단 버튼)
@@ -102,6 +104,17 @@
   - tesseract 미설치 시 503 (graceful degradation)
 - **재고 예측 (시계열)** (`/admin/forecast`): 7일 이동평균 + 선형 추세
   - 일별 출고 이력 → 14일 예측 → 잔여 일수 / 권장 재주문량 자동 산출
+- **결재 양식 빌더** (`/admin/form-templates`): 코드, 라벨, 타입(text/number/date/select/textarea/checkbox), 필수 여부, 옵션 정의
+  - 양식별 기본 결재선 지정 → 결재 요청 시 form_data가 함께 저장됨
+- **공급사 / 발주 / 포털** (`/suppliers`)
+  - 공급사 등록, 발주서 다중 라인, 상태머신 (draft→sent→acknowledged→shipped→received)
+  - 입고 처리 시 자동으로 inbound StockMovement 생성 + 레저 append
+  - 공급사 사용자 계정을 `Supplier.portal_user_id`로 묶으면 자기 PO만 조회·승인·출하 가능
+- **EDI / B2B** (`/admin/edi`): 인바운드/아웃바운드 메시지 큐
+  - 인바운드 PO (JSON) → SalesOrder + Customer 자동 생성
+  - 아웃바운드 INVOIC: 확정 주문 → JSON-EDI 송장 메시지 생성
+  - 모든 메시지는 raw payload + 상태(received/parsed/processed/failed/sent) 보관
+  - 파트너는 `X-API-Key` 헤더로 직접 호출 가능
 - **WellGreen 브랜딩**: Tailwind `brand` 팔레트 (green-600 계열), 🌱 로고
   - 시드 데이터: 라들러/필스너/바이젠/콜라/스파클링워터/감자칩 등 F&B 제품
   - 테넌트: 웰그린 코리아 / 웰그린 라들러 / 트루웰 물류

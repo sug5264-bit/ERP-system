@@ -33,7 +33,11 @@ def get_request(db: Session, request_id: int) -> ApprovalRequest | None:
     return db.query(ApprovalRequest).filter(ApprovalRequest.id == request_id).first()
 
 
-def create_request(db: Session, requester_id: int, payload: ApprovalRequestCreate) -> ApprovalRequest:
+def create_request(
+    db: Session, requester_id: int, payload: ApprovalRequestCreate
+) -> ApprovalRequest:
+    import json
+
     sorted_steps = sorted(payload.steps, key=lambda s: s.order)
     req = ApprovalRequest(
         title=payload.title,
@@ -42,6 +46,10 @@ def create_request(db: Session, requester_id: int, payload: ApprovalRequestCreat
         requester_id=requester_id,
         status=ApprovalStatus.pending,
         current_step=sorted_steps[0].order,
+        template_id=payload.template_id,
+        form_data=json.dumps(payload.form_data, ensure_ascii=False)
+        if payload.form_data is not None
+        else None,
     )
     for s in sorted_steps:
         req.steps.append(ApprovalStep(order=s.order, approver_id=s.approver_id))
