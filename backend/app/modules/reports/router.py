@@ -1,3 +1,4 @@
+from app.core.time import utc_now
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -149,7 +150,7 @@ class ReportScheduleOut(BaseModel):
 
 
 def _next_run_for(freq: Frequency, base: datetime | None = None) -> datetime:
-    base = base or datetime.utcnow()
+    base = base or utc_now()
     if freq == Frequency.daily:
         return base + timedelta(days=1)
     if freq == Frequency.weekly:

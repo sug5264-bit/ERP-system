@@ -1,3 +1,4 @@
+from app.core.time import utc_now
 """Lightweight inventory forecasting based on past outbound movements.
 
 PoC implementation — simple moving average with a linear trend term.
@@ -22,7 +23,7 @@ router = APIRouter(
 
 
 def _daily_outbound(db: Session, item_id: int, days: int) -> list[tuple[date, float]]:
-    since = datetime.utcnow() - timedelta(days=days)
+    since = utc_now() - timedelta(days=days)
     rows = (
         db.query(
             func.date(StockMovement.moved_at).label("d"),

@@ -1,3 +1,4 @@
+from app.core.time import utc_now
 from datetime import datetime
 from importlib import import_module
 
@@ -7,7 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.audit_middleware import AuditMiddleware
 from app.core.config import settings, validate_for_production
 from app.core.db import Base, SessionLocal, engine
+from app.core.logging import configure_logging
 from app.core.rate_limit import RateLimitMiddleware
+from app.core.request_id import RequestIDMiddleware
+
+configure_logging()
 
 MODULES = [
     "auth",
@@ -49,7 +54,7 @@ def _run_due_schedules() -> None:
 
     db = SessionLocal()
     try:
-        now = datetime.utcnow()
+        now = utc_now()
         due = (
             db.query(ReportSchedule)
             .filter(ReportSchedule.enabled == 1)
@@ -81,6 +86,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(AuditMiddleware)
     app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(RequestIDMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

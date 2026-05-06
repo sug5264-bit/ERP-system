@@ -74,6 +74,9 @@ def create_movement(db: Session, payload: StockMovementCreate) -> StockMovement:
     db.refresh(movement)
 
     # Append a tamper-evident ledger entry for supply-chain traceability.
+    # If this fails the movement still succeeds — but we surface it in logs.
+    import logging
+
     try:
         from app.modules.ledger import service as ledger_service
 
@@ -91,7 +94,9 @@ def create_movement(db: Session, payload: StockMovementCreate) -> StockMovement:
             },
         )
     except Exception:
-        pass
+        logging.getLogger("erp.inventory").exception(
+            "failed to append ledger entry for movement %s", movement.id
+        )
 
     return movement
 

@@ -1,3 +1,4 @@
+from app.core.time import utc_now
 import secrets
 from datetime import datetime
 from urllib.parse import urlencode
@@ -108,7 +109,7 @@ def refresh(payload: RefreshIn, db: Session = Depends(get_db)):
     )
     if not record or record.revoked:
         raise HTTPException(status_code=401, detail="Refresh token revoked")
-    if record.expires_at and record.expires_at < datetime.utcnow():
+    if record.expires_at and record.expires_at < utc_now():
         raise HTTPException(status_code=401, detail="Refresh token expired")
 
     user = db.query(User).filter(User.id == record.user_id, User.is_active.is_(True)).first()

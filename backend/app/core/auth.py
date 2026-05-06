@@ -1,3 +1,4 @@
+from app.core.time import utc_now
 import hashlib
 
 from fastapi import Depends, HTTPException, Request, status
@@ -52,7 +53,7 @@ def get_current_user(
         )
         if not record:
             raise credentials_exception
-        record.last_used_at = datetime.utcnow()
+        record.last_used_at = utc_now()
         db.commit()
         user_id = record.user_id
 

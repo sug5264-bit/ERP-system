@@ -15,3 +15,5 @@ apscheduler>=3.10.0
 strawberry-graphql[fastapi]>=0.220.0
 Pillow>=10.0.0
 pytesseract>=0.3.10
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

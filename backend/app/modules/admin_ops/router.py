@@ -1,3 +1,4 @@
+from app.core.time import utc_now
 """Admin-only operational endpoints: backup / restore / Excel import."""
 import io
 import json
@@ -43,11 +44,11 @@ def backup(db: Session = Depends(get_db)):
         ]
 
     body = json.dumps(
-        {"exported_at": datetime.utcnow().isoformat(), "tables": payload},
+        {"exported_at": utc_now().isoformat(), "tables": payload},
         ensure_ascii=False,
         indent=2,
     )
-    stamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    stamp = utc_now().strftime("%Y%m%d-%H%M%S")
     return StreamingResponse(
         iter([body.encode("utf-8")]),
         media_type="application/json",

@@ -1,3 +1,4 @@
+from app.core.time import utc_now
 """Service for executing scheduled reports.
 
 Generates a PDF for the schedule's report_type and emails it to recipients.
@@ -98,7 +99,7 @@ def run_schedule(db: Session, schedule: ReportSchedule) -> dict:
 
     upload_dir = Path(settings.upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    stamp = utc_now().strftime("%Y%m%d-%H%M%S")
     filename = f"{schedule.name.replace(' ', '_')}-{stamp}.pdf"
     path = upload_dir / filename
     path.write_bytes(pdf_bytes)
@@ -110,7 +111,7 @@ def run_schedule(db: Session, schedule: ReportSchedule) -> dict:
         if send_email_safe(to, f"[ERP] {schedule.name}", body):
             sent += 1
 
-    schedule.last_run_at = datetime.utcnow()
+    schedule.last_run_at = utc_now()
     schedule.next_run_at = _next_run(schedule.frequency, schedule.last_run_at)
     db.commit()
 

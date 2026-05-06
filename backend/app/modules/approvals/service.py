@@ -1,3 +1,4 @@
+from app.core.time import utc_now
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -16,7 +17,9 @@ def list_requests(
     approver_id: int | None = None,
     status: ApprovalStatus | None = None,
 ) -> list[ApprovalRequest]:
-    q = db.query(ApprovalRequest)
+    from sqlalchemy.orm import selectinload
+
+    q = db.query(ApprovalRequest).options(selectinload(ApprovalRequest.steps))
     if requester_id is not None:
         q = q.filter(ApprovalRequest.requester_id == requester_id)
     if status is not None:
@@ -78,7 +81,7 @@ def decide(
 
     current.status = ApprovalStatus.approved if approve else ApprovalStatus.rejected
     current.comment = comment
-    current.decided_at = datetime.utcnow()
+    current.decided_at = utc_now()
 
     if not approve:
         req.status = ApprovalStatus.rejected
