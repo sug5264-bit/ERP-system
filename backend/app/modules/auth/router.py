@@ -1,11 +1,17 @@
+import secrets
+from urllib.parse import urlencode
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.core.auth import effective_role, get_current_user, require_role
+from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import create_access_token, hash_password, verify_password
-from app.modules.auth.models import User, UserModulePermission
+from app.modules.auth.models import Role, User, UserModulePermission
 from app.modules.auth.schemas import (
     ModulePermissionIn,
     ModulePermissionOut,
@@ -171,3 +177,80 @@ def set_user_permissions(
         .order_by(UserModulePermission.module)
         .all()
     )
+
+
+# OAuth (Google) ---------------------------------------------------------
+
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+
+
+@router.get("/oauth/google/start")
+def google_start():
+    if not settings.google_client_id:
+        raise HTTPException(status_code=503, detail="Google OAuth not configured")
+    params = {
+        "client_id": settings.google_client_id,
+        "redirect_uri": settings.google_redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": secrets.token_urlsafe(16),
+        "access_type": "online",
+        "prompt": "select_account",
+    }
+    return RedirectResponse(f"{GOOGLE_AUTH_URL}?{urlencode(params)}")
+
+
+@router.get("/oauth/google/callback")
+def google_callback(code: str, db: Session = Depends(get_db)):
+    if not settings.google_client_id or not settings.google_client_secret:
+        raise HTTPException(status_code=503, detail="Google OAuth not configured")
+
+    with httpx.Client(timeout=10.0) as client:
+        token_res = client.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "code": code,
+                "client_id": settings.google_client_id,
+                "client_secret": settings.google_client_secret,
+                "redirect_uri": settings.google_redirect_uri,
+                "grant_type": "authorization_code",
+            },
+        )
+        if token_res.status_code != 200:
+            raise HTTPException(status_code=400, detail="OAuth token exchange failed")
+        access_token = token_res.json().get("access_token")
+
+        info = client.get(
+            GOOGLE_USERINFO_URL, headers={"Authorization": f"Bearer {access_token}"}
+        )
+        if info.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to fetch user info")
+        profile = info.json()
+
+    email = profile.get("email")
+    name = profile.get("name") or email
+    if not email:
+        raise HTTPException(status_code=400, detail="Email missing from Google profile")
+
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        user = User(
+            email=email,
+            full_name=name,
+            hashed_password=hash_password(secrets.token_urlsafe(32)),
+            role=Role(settings.oauth_default_role),
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    jwt_token = create_access_token(subject=str(user.id))
+    redirect = f"{settings.frontend_base}/login?token={jwt_token}"
+    return RedirectResponse(redirect)
+
+
+@router.get("/oauth/providers")
+def list_providers():
+    return {"google": bool(settings.google_client_id)}

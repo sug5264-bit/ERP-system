@@ -18,6 +18,8 @@ MODULES = [
     "reports",
     "notifications",
     "attachments",
+    "approvals",
+    "search",
 ]
 
 

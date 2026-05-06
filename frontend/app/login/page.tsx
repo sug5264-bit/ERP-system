@@ -1,16 +1,30 @@
 "use client";
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { login } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { api, login, setToken } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
 export default function LoginPage() {
   const router = useRouter();
+  const params = useSearchParams();
   const { t, lang, setLang } = useT();
   const [email, setEmail] = useState("admin@example.com");
   const [password, setPassword] = useState("admin1234");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [providers, setProviders] = useState<{ google: boolean }>({ google: false });
+
+  useEffect(() => {
+    const tokenFromUrl = params.get("token");
+    if (tokenFromUrl) {
+      setToken(tokenFromUrl);
+      router.replace("/");
+      return;
+    }
+    api<{ google: boolean }>("/api/auth/oauth/providers")
+      .then(setProviders)
+      .catch(() => {});
+  }, [params, router]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -70,6 +84,23 @@ export default function LoginPage() {
         >
           {loading ? "..." : t("auth.login")}
         </button>
+
+        {providers.google && (
+          <>
+            <div className="flex items-center gap-3 my-4">
+              <hr className="flex-1 border-slate-200" />
+              <span className="text-xs text-slate-500">또는</span>
+              <hr className="flex-1 border-slate-200" />
+            </div>
+            <a
+              href="/api/auth/oauth/google/start"
+              className="block w-full text-center border border-slate-300 py-2 rounded hover:bg-slate-50 text-sm"
+            >
+              Google로 로그인
+            </a>
+          </>
+        )}
+
         <p className="text-xs text-slate-500">admin@example.com / admin1234</p>
       </form>
     </div>

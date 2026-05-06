@@ -3,8 +3,10 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, require_role
 from app.core.db import get_db
+from app.core.email import send_email_safe
+from app.modules.auth.models import User
 from app.modules.inventory.models import Item
 from app.modules.sales.models import OrderStatus, SalesOrder
 
@@ -63,3 +65,29 @@ def list_notifications(
         "count": len(notifications),
         "items": notifications,
     }
+
+
+@router.post(
+    "/email-alerts",
+    dependencies=[Depends(require_role("admin"))],
+)
+def email_low_stock_alerts(
+    threshold: int = Query(10, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Email all admins a digest of current low-stock items."""
+    items = (
+        db.query(Item).filter(Item.stock_qty < threshold).order_by(Item.stock_qty).all()
+    )
+    if not items:
+        return {"sent": 0, "reason": "no low-stock items"}
+
+    body_lines = [f"- {i.sku} {i.name}: 재고 {i.stock_qty} (단가 {i.unit_price})" for i in items]
+    body = "다음 품목의 재고가 임계치 미만입니다:\n\n" + "\n".join(body_lines)
+
+    admins = db.query(User).filter(User.role == "admin").all()
+    sent = 0
+    for admin in admins:
+        if send_email_safe(admin.email, "[ERP] 재고 부족 알림", body):
+            sent += 1
+    return {"sent": sent, "items": len(items), "admins": len(admins)}
