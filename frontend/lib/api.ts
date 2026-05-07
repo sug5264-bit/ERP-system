@@ -101,17 +101,45 @@ export async function api<T = unknown>(
   return (await res.json()) as T;
 }
 
-export async function downloadFile(path: string, filename: string) {
-  const token = getToken();
-  const res = await fetch(path, {
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-  });
+function _serverFilename(res: Response): string | null {
+  /* Parse RFC 5987 filename* and fall back to plain filename=. */
+  const cd = res.headers.get("content-disposition");
+  if (!cd) return null;
+  const star = cd.match(/filename\*=(?:UTF-8|utf-8)''([^;]+)/);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      // fall through
+    }
+  }
+  const plain = cd.match(/filename="?([^";]+)"?/);
+  return plain ? plain[1] : null;
+}
+
+export async function downloadFile(path: string, filename?: string) {
+  const buildHeaders = (token: string | null) => {
+    const h: Record<string, string> = {};
+    if (token) h["Authorization"] = `Bearer ${token}`;
+    const tenant = typeof window !== "undefined" ? localStorage.getItem("erp_tenant_id") : null;
+    if (tenant) h["X-Tenant-ID"] = tenant;
+    return h;
+  };
+
+  let token = getToken();
+  let res = await fetch(path, { headers: buildHeaders(token) });
+  if (res.status === 401 && getRefreshToken()) {
+    const newToken = await tryRefresh();
+    if (newToken) res = await fetch(path, { headers: buildHeaders(newToken) });
+  }
   if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = filename;
+  // Prefer the server-supplied name (preserves Korean) when caller didn't pin one.
+  a.download = filename || _serverFilename(res) || "download";
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -123,16 +151,43 @@ export async function uploadFile<T = any>(
   file: File,
   fields: Record<string, string | number> = {}
 ): Promise<T> {
-  const token = getToken();
   const fd = new FormData();
   fd.append("file", file);
   for (const [k, v] of Object.entries(fields)) fd.append(k, String(v));
-  const res = await fetch(path, {
+
+  const buildHeaders = (token: string | null) => {
+    const h: Record<string, string> = {};
+    if (token) h["Authorization"] = `Bearer ${token}`;
+    const tenant = typeof window !== "undefined" ? localStorage.getItem("erp_tenant_id") : null;
+    if (tenant) h["X-Tenant-ID"] = tenant;
+    return h;
+  };
+
+  let token = getToken();
+  let res = await fetch(path, {
     method: "POST",
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    headers: buildHeaders(token),
     body: fd,
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (res.status === 401 && getRefreshToken()) {
+    const newToken = await tryRefresh();
+    if (newToken) {
+      // FormData stream is consumed; rebuild it for the retry.
+      const fd2 = new FormData();
+      fd2.append("file", file);
+      for (const [k, v] of Object.entries(fields)) fd2.append(k, String(v));
+      res = await fetch(path, { method: "POST", headers: buildHeaders(newToken), body: fd2 });
+    }
+  }
+  if (!res.ok) {
+    let message = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body?.error?.message) message = body.error.message;
+      else if (body?.detail) message = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+    } catch {}
+    throw new Error(message);
+  }
   return res.json();
 }
 

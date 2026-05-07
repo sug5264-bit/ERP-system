@@ -79,13 +79,13 @@ def backup(
         ensure_ascii=False,
         indent=2,
     )
+    from app.core.exports import _content_disposition
+
     stamp = utc_now().strftime("%Y%m%d-%H%M%S")
     return StreamingResponse(
         iter([body.encode("utf-8")]),
         media_type="application/json",
-        headers={
-            "Content-Disposition": f'attachment; filename="erp-backup-{stamp}.json"'
-        },
+        headers={"Content-Disposition": _content_disposition(f"erp-backup-{stamp}.json")},
     )
 
 

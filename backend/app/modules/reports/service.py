@@ -100,7 +100,10 @@ def run_schedule(db: Session, schedule: ReportSchedule) -> dict:
     upload_dir = Path(settings.upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
     stamp = utc_now().strftime("%Y%m%d-%H%M%S")
-    filename = f"{schedule.name.replace(' ', '_')}-{stamp}.pdf"
+    # Replace anything path-unsafe but keep Unicode letters (e.g. Korean).
+    import re
+    safe_name = re.sub(r"[\\/:*?\"<>|\s]+", "_", schedule.name).strip("_") or "report"
+    filename = f"{safe_name}-{stamp}.pdf"
     path = upload_dir / filename
     path.write_bytes(pdf_bytes)
 
