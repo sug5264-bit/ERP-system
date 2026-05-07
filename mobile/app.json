@@ -10,7 +10,8 @@
     "android": { "package": "com.wellgreen.erp" },
     "plugins": ["expo-router"],
     "extra": {
-      "apiBase": "http://localhost:8000"
+      "apiBase": "http://localhost:8000",
+      "comment": "Override per environment via EXPO_PUBLIC_API_BASE or by editing this value. On a real device use the host LAN IP, not localhost."
     }
   }
 }

@@ -1,6 +1,6 @@
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user, get_current_internal_user, require_role
@@ -57,6 +57,7 @@ def list_requests(
 @router.post("", response_model=ApprovalRequestOut)
 def create_request(
     payload: ApprovalRequestCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -73,18 +74,19 @@ def create_request(
         },
     )
 
-    try:
-        from app.core.email import send_email_safe
+    from app.core.email import queue_email
 
-        approver = db.query(User).filter(User.id == first.approver_id).first()
-        if approver:
-            send_email_safe(
-                to=approver.email,
-                subject=f"[ERP] 결재 요청: {req.title}",
-                body=f"{current_user.full_name}님이 결재를 요청했습니다.\n\n제목: {req.title}\n리소스: {req.resource_type}#{req.resource_id}\n",
-            )
-    except Exception:
-        pass
+    approver = db.query(User).filter(User.id == first.approver_id).first()
+    if approver:
+        queue_email(
+            background_tasks,
+            to=approver.email,
+            subject=f"[ERP] 결재 요청: {req.title}",
+            body=(
+                f"{current_user.full_name}님이 결재를 요청했습니다.\n\n"
+                f"제목: {req.title}\n리소스: {req.resource_type}#{req.resource_id}\n"
+            ),
+        )
 
     return req
 

@@ -31,7 +31,10 @@ export default function UsersAdminPage() {
   const [editing, setEditing] = useState<User | null>(null);
   const [perms, setPerms] = useState<Record<string, Role | "">>({});
 
-  const load = async () => setUsers(await api<User[]>("/api/auth/users"));
+  const load = async () => {
+    const res = await api<{ items: User[] }>("/api/auth/users?page=1&size=200");
+    setUsers(res.items);
+  };
 
   useEffect(() => {
     load().catch((e) => setError(String(e)));

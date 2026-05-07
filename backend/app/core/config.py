@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_per_minute: int = 240
 
+    # Observability
+    metrics_enabled: bool = True
+
+    # Audit log retention (days). Older entries are auto-purged by scheduler.
+    audit_retention_days: int = 365
+    ledger_retention_days: int = 0  # 0 = keep forever (chain integrity)
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

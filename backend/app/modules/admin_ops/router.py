@@ -1,5 +1,5 @@
-from app.core.time import utc_now
 """Admin-only operational endpoints: backup / restore / Excel import."""
+from app.core.time import utc_now
 import io
 import json
 from datetime import date, datetime
@@ -33,18 +33,49 @@ def _serialise(value):
     return value
 
 
+# Sensitive secret-like columns are scrubbed from backups so a JSON dump
+# can't be used to exfiltrate hashed credentials.
+SENSITIVE_COLUMNS: dict[str, set[str]] = {
+    "users": {"hashed_password"},
+    "api_keys": {"key_hash"},
+    "refresh_tokens": {"token_hash"},
+}
+
+
+def _scrub(table_name: str, row: dict) -> dict:
+    masked = SENSITIVE_COLUMNS.get(table_name, set())
+    return {
+        k: ("***REDACTED***" if k in masked else _serialise(v))
+        for k, v in row.items()
+    }
+
+
 @router.get("/backup")
-def backup(db: Session = Depends(get_db)):
-    """Dump every table to a JSON document, downloadable file."""
+def backup(
+    include_secrets: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """Dump every table to a JSON document.
+
+    By default password / token hashes are redacted. Pass
+    `include_secrets=true` only when restoring to the same instance.
+    """
     payload: dict[str, list[dict]] = {}
     for table in Base.metadata.sorted_tables:
         rows = db.execute(text(f"SELECT * FROM {table.name}")).mappings().all()
-        payload[table.name] = [
-            {k: _serialise(v) for k, v in row.items()} for row in rows
-        ]
+        if include_secrets:
+            payload[table.name] = [
+                {k: _serialise(v) for k, v in row.items()} for row in rows
+            ]
+        else:
+            payload[table.name] = [_scrub(table.name, dict(row)) for row in rows]
 
     body = json.dumps(
-        {"exported_at": utc_now().isoformat(), "tables": payload},
+        {
+            "exported_at": utc_now().isoformat(),
+            "redacted": not include_secrets,
+            "tables": payload,
+        },
         ensure_ascii=False,
         indent=2,
     )
@@ -52,7 +83,9 @@ def backup(db: Session = Depends(get_db)):
     return StreamingResponse(
         iter([body.encode("utf-8")]),
         media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="erp-backup-{stamp}.json"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="erp-backup-{stamp}.json"'
+        },
     )
 
 

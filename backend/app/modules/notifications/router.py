@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, WebSocket, WebSocketDisconnect
 from jose import JWTError
 from sqlalchemy.orm import Session
 
@@ -75,25 +75,28 @@ def list_notifications(
     dependencies=[Depends(require_role("admin"))],
 )
 def email_low_stock_alerts(
+    background_tasks: BackgroundTasks,
     threshold: int = Query(10, ge=0),
     db: Session = Depends(get_db),
 ):
-    """Email all admins a digest of current low-stock items."""
+    """Queue a low-stock digest to every admin (sent after the response)."""
+    from app.core.email import queue_email
+
     items = (
         db.query(Item).filter(Item.stock_qty < threshold).order_by(Item.stock_qty).all()
     )
     if not items:
-        return {"sent": 0, "reason": "no low-stock items"}
+        return {"queued": 0, "reason": "no low-stock items"}
 
-    body_lines = [f"- {i.sku} {i.name}: 재고 {i.stock_qty} (단가 {i.unit_price})" for i in items]
+    body_lines = [
+        f"- {i.sku} {i.name}: 재고 {i.stock_qty} (단가 {i.unit_price})" for i in items
+    ]
     body = "다음 품목의 재고가 임계치 미만입니다:\n\n" + "\n".join(body_lines)
 
     admins = db.query(User).filter(User.role == "admin").all()
-    sent = 0
     for admin in admins:
-        if send_email_safe(admin.email, "[ERP] 재고 부족 알림", body):
-            sent += 1
-    return {"sent": sent, "items": len(items), "admins": len(admins)}
+        queue_email(background_tasks, admin.email, "[ERP] 재고 부족 알림", body)
+    return {"queued": len(admins), "items": len(items)}
 
 
 ws_router = APIRouter(prefix="/api/notifications", tags=["notifications"])

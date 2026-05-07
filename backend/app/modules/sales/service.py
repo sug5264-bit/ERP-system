@@ -67,13 +67,44 @@ def create_order(
 
 
 def confirm_order(db: Session, order_id: int) -> SalesOrder | None:
-    """Confirm an order and deduct stock for each line item."""
+    """Confirm an order and deduct stock for each line item.
+
+    Pre-flight: lock + validate every line BEFORE any decrement happens, so a
+    shortfall on line N doesn't leave earlier lines partially decremented.
+    """
+    from app.modules.inventory.models import Item
+
     order = get_order(db, order_id)
     if not order:
         return None
     if order.status != OrderStatus.draft:
         raise ValueError(f"Order is already {order.status.value}")
 
+    # Pre-flight: lock all items in deterministic order to avoid deadlocks,
+    # and verify there's enough stock for every line.
+    item_ids = sorted({line.item_id for line in order.items})
+    items_by_id = {
+        i.id: i
+        for i in db.query(Item)
+        .filter(Item.id.in_(item_ids))
+        .with_for_update()
+        .all()
+    }
+
+    needed: dict[int, Decimal] = {}
+    for line in order.items:
+        needed[line.item_id] = needed.get(line.item_id, Decimal("0")) + Decimal(line.quantity)
+
+    for item_id, qty in needed.items():
+        item = items_by_id.get(item_id)
+        if not item:
+            raise ValueError(f"item {item_id} not found")
+        if Decimal(item.stock_qty) < qty:
+            raise ValueError(
+                f"Insufficient stock for {item.sku}: have {item.stock_qty}, need {qty}"
+            )
+
+    # All checks passed — now apply the movements.
     for line in order.items:
         inventory_service.adjust_stock_for_sale(db, line.item_id, Decimal(line.quantity))
 

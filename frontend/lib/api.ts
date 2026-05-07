@@ -84,8 +84,18 @@ export async function api<T = unknown>(
     }
   }
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `${res.status} ${res.statusText}`);
+    let message = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      // Standard envelope: {"error": {"code", "message"}}
+      if (body?.error?.message) message = body.error.message;
+      else if (body?.detail) message = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+    } catch {
+      // body wasn't JSON
+    }
+    const err = new Error(message) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;

@@ -1,9 +1,9 @@
-from app.core.time import utc_now
 """Service for executing scheduled reports.
 
 Generates a PDF for the schedule's report_type and emails it to recipients.
 PDFs are also saved as attachments so they're downloadable from the UI.
 """
+from app.core.time import utc_now
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path

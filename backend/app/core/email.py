@@ -41,3 +41,9 @@ def send_email_safe(to: str, subject: str, body: str) -> bool:
     except Exception as exc:
         logger.exception("Email send failed: %s", exc)
         return False
+
+
+def queue_email(background_tasks, to: str, subject: str, body: str) -> None:
+    """Schedule an email via FastAPI BackgroundTasks so the request returns
+    immediately and we never block on SMTP timeouts."""
+    background_tasks.add_task(send_email_safe, to, subject, body)

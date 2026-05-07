@@ -8,15 +8,31 @@ export type WSMessage = {
 };
 
 type Toast = { id: number; level: "info" | "success" | "error"; text: string };
+export type HistoryItem = {
+  id: number;
+  level: "info" | "success" | "error";
+  text: string;
+  ts: string;
+  read: boolean;
+};
+
+const HISTORY_KEY = "erp_notif_history";
+const MAX_HISTORY = 50;
 
 const WSContext = createContext<{
   lastMessage: WSMessage | null;
   toasts: Toast[];
+  history: HistoryItem[];
+  unreadCount: number;
+  markAllRead: () => void;
   pushToast: (level: Toast["level"], text: string) => void;
   dismissToast: (id: number) => void;
 }>({
   lastMessage: null,
   toasts: [],
+  history: [],
+  unreadCount: 0,
+  markAllRead: () => {},
   pushToast: () => {},
   dismissToast: () => {},
 });
@@ -24,16 +40,48 @@ const WSContext = createContext<{
 export function WSProvider({ children }: { children: ReactNode }) {
   const [lastMessage, setLastMessage] = useState<WSMessage | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [history, setHistory] = useState<HistoryItem[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? "[]");
+    } catch {
+      return [];
+    }
+  });
   const wsRef = useRef<WebSocket | null>(null);
   const idRef = useRef(0);
+
+  const persistHistory = (items: HistoryItem[]) => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(items.slice(0, MAX_HISTORY)));
+    }
+  };
 
   const pushToast = (level: Toast["level"], text: string) => {
     const id = ++idRef.current;
     setToasts((prev) => [...prev, { id, level, text }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 5000);
+    setHistory((prev) => {
+      const next: HistoryItem[] = [
+        { id, level, text, ts: new Date().toISOString(), read: false },
+        ...prev,
+      ].slice(0, MAX_HISTORY);
+      persistHistory(next);
+      return next;
+    });
   };
 
   const dismissToast = (id: number) => setToasts((prev) => prev.filter((t) => t.id !== id));
+
+  const markAllRead = () => {
+    setHistory((prev) => {
+      const next = prev.map((h) => ({ ...h, read: true }));
+      persistHistory(next);
+      return next;
+    });
+  };
+
+  const unreadCount = history.filter((h) => !h.read).length;
 
   useEffect(() => {
     const token = getToken();
@@ -87,7 +135,17 @@ export function WSProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <WSContext.Provider value={{ lastMessage, toasts, pushToast, dismissToast }}>
+    <WSContext.Provider
+      value={{
+        lastMessage,
+        toasts,
+        history,
+        unreadCount,
+        markAllRead,
+        pushToast,
+        dismissToast,
+      }}
+    >
       {children}
     </WSContext.Provider>
   );

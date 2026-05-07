@@ -4,12 +4,13 @@ from datetime import datetime
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.core.auth import effective_role, get_current_user, hash_api_key, require_role
+from app.core.pagination import Page, PageParams, paginate
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import (
@@ -148,11 +149,11 @@ def my_effective_roles(current_user: User = Depends(get_current_user)):
 
 @router.get(
     "/users",
-    response_model=list[UserOut],
+    response_model=Page[UserOut],
     dependencies=[Depends(require_role("admin"))],
 )
-def list_users(db: Session = Depends(get_db)):
-    return db.query(User).order_by(User.id).all()
+def list_users(params: PageParams = Depends(), db: Session = Depends(get_db)):
+    return paginate(db.query(User).order_by(User.id), params)
 
 
 @router.post(
@@ -268,26 +269,47 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
 
 
+OAUTH_STATE_COOKIE = "wg_oauth_state"
+
+
 @router.get("/oauth/google/start")
 def google_start():
     if not settings.google_client_id:
         raise HTTPException(status_code=503, detail="Google OAuth not configured")
+    state = secrets.token_urlsafe(32)
     params = {
         "client_id": settings.google_client_id,
         "redirect_uri": settings.google_redirect_uri,
         "response_type": "code",
         "scope": "openid email profile",
-        "state": secrets.token_urlsafe(16),
+        "state": state,
         "access_type": "online",
         "prompt": "select_account",
     }
-    return RedirectResponse(f"{GOOGLE_AUTH_URL}?{urlencode(params)}")
+    resp = RedirectResponse(f"{GOOGLE_AUTH_URL}?{urlencode(params)}")
+    # Bind state to the user agent via a short-lived, HttpOnly cookie.
+    resp.set_cookie(
+        OAUTH_STATE_COOKIE,
+        state,
+        max_age=600,
+        httponly=True,
+        samesite="lax",
+        secure=settings.is_production,
+    )
+    return resp
 
 
 @router.get("/oauth/google/callback")
-def google_callback(code: str, db: Session = Depends(get_db)):
+def google_callback(
+    code: str,
+    state: str | None = None,
+    db: Session = Depends(get_db),
+    expected_state: str | None = Cookie(None, alias=OAUTH_STATE_COOKIE),
+):
     if not settings.google_client_id or not settings.google_client_secret:
         raise HTTPException(status_code=503, detail="Google OAuth not configured")
+    if not state or not expected_state or not secrets.compare_digest(state, expected_state):
+        raise HTTPException(status_code=400, detail="Invalid OAuth state (CSRF check failed)")
 
     with httpx.Client(timeout=10.0) as client:
         token_res = client.post(
@@ -330,7 +352,9 @@ def google_callback(code: str, db: Session = Depends(get_db)):
 
     jwt_token = create_access_token(subject=str(user.id))
     redirect = f"{settings.frontend_base}/login?token={jwt_token}"
-    return RedirectResponse(redirect)
+    resp = RedirectResponse(redirect)
+    resp.delete_cookie(OAUTH_STATE_COOKIE)
+    return resp
 
 
 @router.get("/oauth/providers")

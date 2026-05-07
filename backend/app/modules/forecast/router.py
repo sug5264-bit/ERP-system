@@ -1,9 +1,9 @@
-from app.core.time import utc_now
 """Lightweight inventory forecasting based on past outbound movements.
 
 PoC implementation — simple moving average with a linear trend term.
 For production, consider Prophet / statsmodels SARIMA.
 """
+from app.core.time import utc_now
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 

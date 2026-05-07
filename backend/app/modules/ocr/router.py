@@ -65,6 +65,10 @@ def _parse_lines(text: str) -> list[dict]:
     return out
 
 
+OCR_MAX_BYTES = 10 * 1024 * 1024
+OCR_ALLOWED_TYPES = {"image/png", "image/jpeg", "image/webp", "image/tiff"}
+
+
 @router.post("/receipt")
 async def parse_receipt(
     file: UploadFile = File(...),
@@ -72,7 +76,14 @@ async def parse_receipt(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    if file.content_type not in OCR_ALLOWED_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Image type '{file.content_type}' not supported",
+        )
     raw = await file.read()
+    if len(raw) > OCR_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Image too large (max 10 MB)")
     text = _extract_text(raw)
     lines = _parse_lines(text)
 

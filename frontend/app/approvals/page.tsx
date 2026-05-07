@@ -76,8 +76,8 @@ export default function ApprovalsPage() {
   }, [tab]);
 
   useEffect(() => {
-    api<User[]>("/api/auth/users")
-      .then(setUsers)
+    api<{ items: User[] }>("/api/auth/users?page=1&size=200")
+      .then((r) => setUsers(r.items))
       .catch(() => setUsers([]));
     api<Template[]>("/api/approvals/templates")
       .then(setTemplates)

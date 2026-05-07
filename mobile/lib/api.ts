@@ -1,8 +1,11 @@
 import * as SecureStore from "expo-secure-store";
 import Constants from "expo-constants";
 
+// Resolution order: env var > app.json extra > localhost fallback.
 const API_BASE: string =
-  (Constants.expoConfig?.extra as any)?.apiBase || "http://localhost:8000";
+  (process.env.EXPO_PUBLIC_API_BASE as string | undefined) ||
+  ((Constants.expoConfig?.extra as any)?.apiBase as string | undefined) ||
+  "http://localhost:8000";
 
 const TOKEN_KEY = "wellgreen_token";
 

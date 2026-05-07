@@ -51,7 +51,9 @@ def test_outbound_blocks_negative_stock(client, admin_auth, db_session):
         json={"item_id": item.id, "type": "outbound", "quantity": 50},
     )
     assert res.status_code == 400
-    assert "Insufficient" in res.json()["detail"]
+    body = res.json()
+    # New error envelope: {"error": {"code": ..., "message": ...}}
+    assert "Insufficient" in body["error"]["message"]
 
 
 def test_paginated_items(client, admin_auth, db_session):

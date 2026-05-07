@@ -6,7 +6,8 @@
 
 ## 스택
 
-- **Backend**: FastAPI + SQLAlchemy 2.0 + Postgres (Alembic 마이그레이션) / SQLite (로컬)
+- **Backend**: FastAPI + SQLAlchemy 2.0 + **Postgres** (Alembic 마이그레이션 — 운영 필수) / SQLite (로컬 개발만)
+  - 동시성 잠금(`SELECT ... FOR UPDATE`)에 의존하므로 SQLite는 PoC 외 사용하지 말 것
 - **Frontend**: Next.js 14 (App Router) + TypeScript + Tailwind
 - **Auth**: JWT (Bearer) + RBAC (admin / manager / staff / viewer)
 - **구조**: Modular Monolith — 추후 모듈 추가가 용이

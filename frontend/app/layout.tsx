@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import Toasts from "@/components/Toasts";
 import PWARegister from "@/components/PWARegister";
 import { CurrencyProvider } from "@/lib/currency";
@@ -33,19 +34,21 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="ko">
       <body>
-        <ThemeProvider>
-          <I18nProvider>
-            <TenantProvider>
-              <CurrencyProvider>
-                <WSProvider>
-                  {children}
-                  <Toasts />
-                  <PWARegister />
-                </WSProvider>
-              </CurrencyProvider>
-            </TenantProvider>
-          </I18nProvider>
-        </ThemeProvider>
+        <ErrorBoundary>
+          <ThemeProvider>
+            <I18nProvider>
+              <TenantProvider>
+                <CurrencyProvider>
+                  <WSProvider>
+                    {children}
+                    <Toasts />
+                    <PWARegister />
+                  </WSProvider>
+                </CurrencyProvider>
+              </TenantProvider>
+            </I18nProvider>
+          </ThemeProvider>
+        </ErrorBoundary>
       </body>
     </html>
   );

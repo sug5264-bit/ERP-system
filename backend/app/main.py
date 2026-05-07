@@ -8,9 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.audit_middleware import AuditMiddleware
 from app.core.config import settings, validate_for_production
 from app.core.db import Base, SessionLocal, engine
+from app.core.errors import install_exception_handlers
 from app.core.logging import configure_logging
 from app.core.rate_limit import RateLimitMiddleware
 from app.core.request_id import RequestIDMiddleware
+from app.core.security_headers import SecurityHeadersMiddleware
 
 configure_logging()
 
@@ -50,6 +52,31 @@ def _redact(url: str) -> str:
     return url
 
 
+def _purge_expired_audit_logs() -> None:
+    """Drop audit_logs older than `audit_retention_days`."""
+    if settings.audit_retention_days <= 0:
+        return
+    from datetime import timedelta
+
+    from app.modules.audit.models import AuditLog
+
+    cutoff = utc_now() - timedelta(days=settings.audit_retention_days)
+    db = SessionLocal()
+    try:
+        deleted = (
+            db.query(AuditLog)
+            .filter(AuditLog.created_at < cutoff)
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        if deleted:
+            import logging
+
+            logging.getLogger("erp.audit").info("purged %s old audit rows", deleted)
+    finally:
+        db.close()
+
+
 def _run_due_schedules() -> None:
     from app.modules.reports.models import ReportSchedule
     from app.modules.reports.service import run_schedule
@@ -86,6 +113,9 @@ def create_app() -> FastAPI:
             for issue in issues:
                 print(f"⚠️  config: {issue}")
 
+    install_exception_handlers(app)
+
+    app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(AuditMiddleware)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(RequestIDMiddleware)
@@ -111,6 +141,16 @@ def create_app() -> FastAPI:
 
     from app.core.graphql_app import graphql_router
     app.include_router(graphql_router, prefix="/graphql")
+
+    if settings.metrics_enabled:
+        try:
+            from prometheus_fastapi_instrumentator import Instrumentator
+
+            Instrumentator(
+                excluded_handlers=["/api/health.*", "/metrics"]
+            ).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+        except ImportError:
+            pass
 
     @app.get("/api/health")
     def health():
@@ -165,6 +205,8 @@ def create_app() -> FastAPI:
         scheduler.add_job(
             _run_due_schedules, "interval", minutes=settings.scheduler_interval_minutes
         )
+        # Daily audit log retention sweep
+        scheduler.add_job(_purge_expired_audit_logs, "interval", hours=24)
 
         @app.on_event("startup")
         def _start_scheduler():

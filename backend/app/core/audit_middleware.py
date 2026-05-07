@@ -82,5 +82,10 @@ class AuditMiddleware(BaseHTTPMiddleware):
             db.commit()
         except Exception:
             db.rollback()
+            import logging
+
+            logging.getLogger("erp.audit").exception(
+                "audit log write failed for %s %s", request.method, request.url.path
+            )
         finally:
             db.close()

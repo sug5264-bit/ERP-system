@@ -26,6 +26,14 @@ def _storage_dir() -> Path:
     return path
 
 
+# Whitelist of safe extensions. Reject everything else even if MIME claims OK.
+ALLOWED_EXTENSIONS = {
+    ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".csv", ".xlsx", ".xls", ".doc", ".docx", ".ppt", ".pptx",
+    ".txt", ".md", ".json", ".zip",
+}
+
+
 @router.post("", response_model=AttachmentOut)
 async def upload(
     file: UploadFile = File(...),
@@ -37,7 +45,15 @@ async def upload(
     if file.size and file.size > settings.upload_max_bytes:
         raise HTTPException(status_code=413, detail="File too large")
 
-    suffix = Path(file.filename or "upload").suffix
+    suffix = Path(file.filename or "upload").suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported file type '{suffix}'. Allowed: "
+            + ", ".join(sorted(ALLOWED_EXTENSIONS)),
+        )
+    # Strip everything but the extension from the original filename — never trust path components.
+    safe_basename = Path(file.filename or "upload").name
     stored_name = f"{uuid.uuid4().hex}{suffix}"
     target = _storage_dir() / stored_name
 
@@ -51,7 +67,7 @@ async def upload(
     attachment = Attachment(
         related_type=related_type,
         related_id=related_id,
-        filename=file.filename or stored_name,
+        filename=safe_basename or stored_name,
         content_type=file.content_type or "application/octet-stream",
         size=len(contents),
         storage_path=str(target),
@@ -77,14 +93,26 @@ def list_attachments(
     return q.order_by(Attachment.created_at.desc()).all()
 
 
+def _resolve_safe_path(stored: str) -> Path:
+    """Refuse to serve any path that escapes the configured upload_dir."""
+    upload_root = Path(settings.upload_dir).resolve()
+    target = Path(stored).resolve()
+    try:
+        target.relative_to(upload_root)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Path outside upload root")
+    return target
+
+
 @router.get("/{attachment_id}/download")
 def download(attachment_id: int, db: Session = Depends(get_db)):
     att = db.query(Attachment).filter(Attachment.id == attachment_id).first()
     if not att:
         raise HTTPException(status_code=404, detail="Not found")
-    if not os.path.exists(att.storage_path):
+    safe = _resolve_safe_path(att.storage_path)
+    if not safe.exists():
         raise HTTPException(status_code=410, detail="File missing on disk")
-    return FileResponse(att.storage_path, filename=att.filename, media_type=att.content_type)
+    return FileResponse(str(safe), filename=att.filename, media_type=att.content_type)
 
 
 @router.delete(
@@ -96,7 +124,8 @@ def delete(attachment_id: int, db: Session = Depends(get_db)):
     if not att:
         raise HTTPException(status_code=404, detail="Not found")
     try:
-        os.remove(att.storage_path)
+        safe = _resolve_safe_path(att.storage_path)
+        os.remove(safe)
     except OSError:
         pass
     db.delete(att)

@@ -11,6 +11,7 @@ too for human testing.
 """
 from app.core.time import utc_now
 import json
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
@@ -55,7 +56,8 @@ class EDIMessageOut(BaseModel):
     error: str | None
     related_resource_type: str | None
     related_resource_id: int | None
-    processed_at: object | None  # datetime, but kept loose here
+    processed_at: datetime | None = None
+    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
