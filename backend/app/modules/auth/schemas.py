@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, ConfigDict
 
 from app.modules.auth.models import Role
 
@@ -16,8 +16,7 @@ class UserOut(BaseModel):
     full_name: str
     role: Role
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserUpdate(BaseModel):
@@ -37,8 +36,7 @@ class ModulePermissionOut(BaseModel):
     module: str
     role: Role
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class Token(BaseModel):

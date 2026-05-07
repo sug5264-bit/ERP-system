@@ -22,10 +22,25 @@ type Request = {
   status: "pending" | "approved" | "rejected" | "cancelled";
   current_step: number;
   created_at: string;
+  template_id: number | null;
+  form_data: Record<string, any> | null;
   steps: Step[];
 };
 
 type User = { id: number; email: string; full_name: string };
+
+type FieldType = "text" | "number" | "date" | "select" | "textarea" | "checkbox";
+type Field = { key: string; label: string; type: FieldType; required: boolean; options: string[] | null };
+type TemplateStep = { order: number; approver_id: number };
+type Template = {
+  id: number;
+  code: string;
+  name: string;
+  description: string | null;
+  schema_: Field[];
+  default_steps: TemplateStep[];
+  is_active: boolean;
+};
 
 const TABS = [
   { key: "inbox", label: "결재할 요청" },
@@ -47,6 +62,10 @@ export default function ApprovalsPage() {
     approver_ids: [] as string[],
   });
 
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [templateId, setTemplateId] = useState<string>("");
+  const [formValues, setFormValues] = useState<Record<string, any>>({});
+
   const load = () =>
     api<Request[]>(`/api/approvals?scope=${tab}`)
       .then(setRequests)
@@ -60,26 +79,60 @@ export default function ApprovalsPage() {
     api<User[]>("/api/auth/users")
       .then(setUsers)
       .catch(() => setUsers([]));
+    api<Template[]>("/api/approvals/templates")
+      .then(setTemplates)
+      .catch(() => setTemplates([]));
   }, []);
+
+  const selectedTemplate = templates.find((t) => String(t.id) === templateId);
+
+  // When a template is picked, prefill the approver chain from default_steps
+  useEffect(() => {
+    if (!selectedTemplate) return;
+    setForm((f) => ({
+      ...f,
+      title: f.title || selectedTemplate.name,
+      approver_ids: selectedTemplate.default_steps
+        .sort((a, b) => a.order - b.order)
+        .map((s) => String(s.approver_id)),
+    }));
+    // Clear values when switching templates
+    setFormValues({});
+  }, [templateId]);
 
   const userName = (id: number) => users.find((u) => u.id === id)?.full_name ?? `user#${id}`;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+
+    // Validate template required fields
+    if (selectedTemplate) {
+      for (const f of selectedTemplate.schema_) {
+        if (f.required && !formValues[f.key]) {
+          setError(`필수 항목: ${f.label}`);
+          return;
+        }
+      }
+    }
+
     try {
       await api("/api/approvals", {
         method: "POST",
         body: JSON.stringify({
           title: form.title,
           resource_type: form.resource_type,
-          resource_id: Number(form.resource_id),
+          resource_id: Number(form.resource_id) || 0,
+          template_id: selectedTemplate ? selectedTemplate.id : null,
+          form_data: selectedTemplate ? formValues : null,
           steps: form.approver_ids
             .filter(Boolean)
             .map((id, idx) => ({ order: idx + 1, approver_id: Number(id) })),
         }),
       });
       setForm({ title: "", resource_type: "sales_order", resource_id: "", approver_ids: [] });
+      setTemplateId("");
+      setFormValues({});
       await load();
     } catch (e) {
       setError(String(e));
@@ -128,6 +181,26 @@ export default function ApprovalsPage() {
         className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 mb-6 space-y-3"
       >
         <h2 className="text-lg font-medium">새 결재 요청</h2>
+
+        <div>
+          <label className="text-sm text-slate-600 block mb-1">양식 (선택)</label>
+          <select
+            value={templateId}
+            onChange={(e) => setTemplateId(e.target.value)}
+            className="border rounded px-2 py-1 w-full"
+          >
+            <option value="">양식 없이 자유 결재</option>
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name} ({t.code})
+              </option>
+            ))}
+          </select>
+          {selectedTemplate?.description && (
+            <p className="text-xs text-slate-500 mt-1">{selectedTemplate.description}</p>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <input
             required
@@ -144,17 +217,80 @@ export default function ApprovalsPage() {
             <option value="sales_order">sales_order</option>
             <option value="journal_entry">journal_entry</option>
             <option value="employee">employee</option>
+            <option value="expense">expense</option>
             <option value="other">other</option>
           </select>
           <input
-            required
             type="number"
-            placeholder="리소스 ID"
+            placeholder="리소스 ID (양식만 쓰면 0)"
             value={form.resource_id}
             onChange={(e) => setForm({ ...form, resource_id: e.target.value })}
             className="border rounded px-2 py-1"
           />
         </div>
+
+        {selectedTemplate && selectedTemplate.schema_.length > 0 && (
+          <div className="border-t pt-3 space-y-2">
+            <div className="text-sm font-medium">{selectedTemplate.name} 입력</div>
+            {selectedTemplate.schema_.map((field) => (
+              <div key={field.key} className="grid grid-cols-12 items-center gap-2">
+                <label className="col-span-3 text-sm">
+                  {field.label}
+                  {field.required && <span className="text-red-600 ml-1">*</span>}
+                </label>
+                <div className="col-span-9">
+                  {field.type === "textarea" ? (
+                    <textarea
+                      value={formValues[field.key] ?? ""}
+                      onChange={(e) =>
+                        setFormValues({ ...formValues, [field.key]: e.target.value })
+                      }
+                      className="border rounded px-2 py-1 w-full"
+                      rows={3}
+                    />
+                  ) : field.type === "select" ? (
+                    <select
+                      value={formValues[field.key] ?? ""}
+                      onChange={(e) =>
+                        setFormValues({ ...formValues, [field.key]: e.target.value })
+                      }
+                      className="border rounded px-2 py-1 w-full"
+                    >
+                      <option value="">선택</option>
+                      {(field.options ?? []).map((o) => (
+                        <option key={o} value={o}>
+                          {o}
+                        </option>
+                      ))}
+                    </select>
+                  ) : field.type === "checkbox" ? (
+                    <input
+                      type="checkbox"
+                      checked={!!formValues[field.key]}
+                      onChange={(e) =>
+                        setFormValues({ ...formValues, [field.key]: e.target.checked })
+                      }
+                    />
+                  ) : (
+                    <input
+                      type={field.type === "number" ? "number" : field.type === "date" ? "date" : "text"}
+                      value={formValues[field.key] ?? ""}
+                      onChange={(e) =>
+                        setFormValues({
+                          ...formValues,
+                          [field.key]:
+                            field.type === "number" ? Number(e.target.value) : e.target.value,
+                        })
+                      }
+                      className="border rounded px-2 py-1 w-full"
+                    />
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="space-y-2">
           <div className="text-sm text-slate-600">결재자 (순서대로)</div>
           {form.approver_ids.map((id, idx) => (
@@ -253,6 +389,18 @@ export default function ApprovalsPage() {
                   {r.status}
                 </span>
               </div>
+
+              {r.form_data && (
+                <dl className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1 text-sm bg-slate-50 dark:bg-slate-800 rounded p-2">
+                  {Object.entries(r.form_data).map(([k, v]) => (
+                    <div key={k} className="flex gap-2">
+                      <dt className="text-slate-500 capitalize min-w-[6rem]">{k}</dt>
+                      <dd className="font-medium">{String(v)}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+
               <ol className="mt-3 space-y-1">
                 {r.steps.map((s) => (
                   <li key={s.id} className="flex items-center gap-2 text-sm">

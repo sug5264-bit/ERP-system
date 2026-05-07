@@ -44,6 +44,14 @@ export default function SuppliersPage() {
   const [error, setError] = useState("");
 
   const [supForm, setSupForm] = useState({ code: "", name: "", contact_email: "" });
+  const [portalForm, setPortalForm] = useState({
+    code: "",
+    name: "",
+    contact_email: "",
+    portal_full_name: "",
+    portal_password: "",
+  });
+  const [portalCreated, setPortalCreated] = useState<string | null>(null);
   const [poForm, setPoForm] = useState({
     po_no: "",
     supplier_id: "",
@@ -82,6 +90,31 @@ export default function SuppliersPage() {
         body: JSON.stringify(supForm),
       });
       setSupForm({ code: "", name: "", contact_email: "" });
+      await load();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const addSupplierWithPortal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setPortalCreated(null);
+    try {
+      const res = await api<{ id: number; portal_user_id: number | null }>(
+        "/api/suppliers/with-portal-user",
+        { method: "POST", body: JSON.stringify(portalForm) }
+      );
+      setPortalCreated(
+        `공급사 + 포털 계정 생성 완료 (이메일: ${portalForm.contact_email})`
+      );
+      setPortalForm({
+        code: "",
+        name: "",
+        contact_email: "",
+        portal_full_name: "",
+        portal_password: "",
+      });
       await load();
     } catch (e) {
       setError(String(e));
@@ -196,6 +229,72 @@ export default function SuppliersPage() {
               className="border rounded px-2 py-1"
             />
             <button className="bg-slate-900 text-white px-3 rounded">공급사 추가</button>
+          </form>
+
+          <form
+            onSubmit={addSupplierWithPortal}
+            className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 mb-6 space-y-3"
+          >
+            <h2 className="text-lg font-medium">공급사 + 포털 계정 동시 생성</h2>
+            <p className="text-xs text-slate-500">
+              공급사 사용자는 포털에서 자기 PO만 조회·승인·출하할 수 있고 다른 모듈은 차단됩니다.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <input
+                required
+                placeholder="공급사 코드 (SUP-002)"
+                value={portalForm.code}
+                onChange={(e) =>
+                  setPortalForm({ ...portalForm, code: e.target.value })
+                }
+                className="border rounded px-2 py-1"
+              />
+              <input
+                required
+                placeholder="공급사명"
+                value={portalForm.name}
+                onChange={(e) =>
+                  setPortalForm({ ...portalForm, name: e.target.value })
+                }
+                className="border rounded px-2 py-1"
+              />
+              <input
+                required
+                type="email"
+                placeholder="포털 로그인 이메일"
+                value={portalForm.contact_email}
+                onChange={(e) =>
+                  setPortalForm({ ...portalForm, contact_email: e.target.value })
+                }
+                className="border rounded px-2 py-1"
+              />
+              <input
+                required
+                placeholder="포털 사용자 이름"
+                value={portalForm.portal_full_name}
+                onChange={(e) =>
+                  setPortalForm({ ...portalForm, portal_full_name: e.target.value })
+                }
+                className="border rounded px-2 py-1"
+              />
+              <input
+                required
+                type="password"
+                minLength={8}
+                placeholder="초기 비밀번호 (8자 이상)"
+                value={portalForm.portal_password}
+                onChange={(e) =>
+                  setPortalForm({ ...portalForm, portal_password: e.target.value })
+                }
+                className="border rounded px-2 py-1"
+              />
+              <button className="bg-brand-700 text-white px-3 rounded text-sm">
+                생성 + 계정 발급
+              </button>
+            </div>
+            {portalCreated && (
+              <p className="text-brand-700 text-sm">{portalCreated}</p>
+            )}
           </form>
 
           <DataTable<Supplier>

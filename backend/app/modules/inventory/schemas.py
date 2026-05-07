@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.modules.inventory.models import MovementType
 
@@ -18,8 +18,7 @@ class StockLotOut(StockLotIn):
     id: int
     item_id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ItemBase(BaseModel):
@@ -37,8 +36,7 @@ class ItemOut(ItemBase):
     id: int
     stock_qty: Decimal
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class StockMovementCreate(BaseModel):
@@ -59,5 +57,4 @@ class StockMovementOut(BaseModel):
     note: str | None = None
     item: ItemOut | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

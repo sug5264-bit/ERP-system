@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class TenantBase(BaseModel):
@@ -15,8 +15,7 @@ class TenantOut(TenantBase):
     id: int
     is_active: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserTenantAssign(BaseModel):

@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from app.modules.finance.models import AccountType
 
@@ -19,8 +19,7 @@ class AccountCreate(AccountBase):
 class AccountOut(AccountBase):
     id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class JournalLineIn(BaseModel):
@@ -34,8 +33,7 @@ class JournalLineOut(JournalLineIn):
     id: int
     account: AccountOut | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class JournalEntryCreate(BaseModel):
@@ -52,5 +50,4 @@ class JournalEntryOut(BaseModel):
     reference: str | None = None
     lines: list[JournalLineOut]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

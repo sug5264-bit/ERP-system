@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 from app.modules.approvals.models import ApprovalStatus
 
@@ -20,8 +20,7 @@ class ApprovalStepOut(BaseModel):
     comment: str | None
     decided_at: datetime | None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ApprovalRequestCreate(BaseModel):
@@ -46,8 +45,7 @@ class ApprovalRequestOut(BaseModel):
     form_data: dict | None = None
     steps: list[ApprovalStepOut]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
     @field_validator("form_data", mode="before")
     @classmethod

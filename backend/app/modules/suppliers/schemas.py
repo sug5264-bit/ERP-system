@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, ConfigDict
 
 from app.modules.suppliers.models import POStatus
 
@@ -15,12 +15,22 @@ class SupplierIn(BaseModel):
     portal_user_id: int | None = None
 
 
+class CreateSupplierWithPortalUser(BaseModel):
+    """Create a Supplier together with a fresh portal-user account."""
+    code: str
+    name: str
+    contact_email: EmailStr
+    phone: str | None = None
+    business_no: str | None = None
+    portal_full_name: str
+    portal_password: str = Field(min_length=8)
+
+
 class SupplierOut(SupplierIn):
     id: int
     is_active: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class POItemIn(BaseModel):
@@ -33,8 +43,7 @@ class POItemOut(POItemIn):
     id: int
     received_qty: Decimal
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class POCreate(BaseModel):
@@ -57,8 +66,7 @@ class POOut(BaseModel):
     items: list[POItemOut]
     supplier: SupplierOut | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class POReceiveLine(BaseModel):

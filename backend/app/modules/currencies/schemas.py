@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class CurrencyBase(BaseModel):
@@ -18,8 +18,7 @@ class CurrencyCreate(CurrencyBase):
 class CurrencyOut(CurrencyBase):
     id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ExchangeRateIn(BaseModel):
@@ -33,8 +32,7 @@ class ExchangeRateOut(BaseModel):
     rate_to_base: Decimal
     as_of_date: date
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ConvertResult(BaseModel):

@@ -29,6 +29,7 @@ from app.modules.suppliers.models import (
     Supplier,
 )
 from app.modules.suppliers.schemas import (
+    CreateSupplierWithPortalUser,
     POCreate,
     POOut,
     POReceive,
@@ -70,6 +71,51 @@ def create_supplier(payload: SupplierIn, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(s)
     return s
+
+
+@router.post(
+    "/with-portal-user",
+    response_model=SupplierOut,
+    dependencies=[Depends(get_current_internal_user), Depends(require_role("admin"))],
+)
+def create_supplier_with_portal_user(
+    payload: CreateSupplierWithPortalUser,
+    db: Session = Depends(get_db),
+):
+    """Create a Supplier and a paired portal-user account in one transaction.
+
+    The portal user gets `Role.supplier` and is automatically linked via
+    `Supplier.portal_user_id`.
+    """
+    from app.core.security import hash_password
+    from app.modules.auth.models import Role, User
+
+    if db.query(Supplier).filter(Supplier.code == payload.code).first():
+        raise HTTPException(status_code=400, detail="Supplier code already exists")
+    if db.query(User).filter(User.email == payload.contact_email).first():
+        raise HTTPException(status_code=400, detail="Email already in use by a user")
+
+    portal_user = User(
+        email=payload.contact_email,
+        full_name=payload.portal_full_name,
+        hashed_password=hash_password(payload.portal_password),
+        role=Role.supplier,
+    )
+    db.add(portal_user)
+    db.flush()
+
+    supplier = Supplier(
+        code=payload.code,
+        name=payload.name,
+        contact_email=payload.contact_email,
+        phone=payload.phone,
+        business_no=payload.business_no,
+        portal_user_id=portal_user.id,
+    )
+    db.add(supplier)
+    db.commit()
+    db.refresh(supplier)
+    return supplier
 
 
 # ---- Purchase Orders -------------------------------------------------------

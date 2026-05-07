@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, ConfigDict
 
 
 class DepartmentBase(BaseModel):
@@ -16,8 +16,7 @@ class DepartmentCreate(DepartmentBase):
 class DepartmentOut(DepartmentBase):
     id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class EmployeeBase(BaseModel):
@@ -45,5 +44,4 @@ class EmployeeOut(EmployeeBase):
     id: int
     department: DepartmentOut | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

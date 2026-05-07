@@ -1,7 +1,7 @@
 import json
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user, get_current_internal_user, require_role
@@ -33,8 +33,7 @@ class FieldDefOut(BaseModel):
     options: list[str] | None = None
     required: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class FieldValueIn(BaseModel):
@@ -47,8 +46,7 @@ class FieldValueOut(FieldValueIn):
     entity_type: str
     entity_id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 def _to_def_out(d: FieldDefinition) -> FieldDefOut:

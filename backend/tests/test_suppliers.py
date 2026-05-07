@@ -105,6 +105,37 @@ def test_po_state_machine_and_inbound_movement(client, admin_auth, db_session):
     assert Decimal(item.stock_qty) == Decimal("100")
 
 
+def test_create_supplier_with_portal_user(client, admin_auth):
+    """Combined endpoint creates a Supplier + supplier-role User in one call."""
+    res = client.post(
+        "/api/suppliers/with-portal-user",
+        headers=admin_auth["headers"],
+        json={
+            "code": "SUP-PORTAL-1",
+            "name": "Portal Co",
+            "contact_email": "portal@vendor.com",
+            "portal_full_name": "Portal Admin",
+            "portal_password": "secret-pw-123",
+        },
+    )
+    assert res.status_code == 200
+    assert res.json()["portal_user_id"] is not None
+
+    # Portal user can log in
+    login = client.post(
+        "/api/auth/login",
+        data={"username": "portal@vendor.com", "password": "secret-pw-123"},
+    )
+    assert login.status_code == 200
+
+    # And is blocked from internal modules but can list (empty) own POs.
+    h = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert client.get("/api/sales/orders", headers=h).status_code == 403
+    own = client.get("/api/suppliers/orders", headers=h)
+    assert own.status_code == 200
+    assert own.json()["items"] == []
+
+
 def test_invalid_state_transition_rejected(client, admin_auth, db_session):
     item = _create_item(db_session, sku="WG-S-PO-2")
     sup = _create_supplier(client, admin_auth["headers"])

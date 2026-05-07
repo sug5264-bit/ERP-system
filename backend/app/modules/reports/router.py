@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -145,8 +145,7 @@ class ReportScheduleOut(BaseModel):
     last_run_at: datetime | None
     enabled: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 def _next_run_for(freq: Frequency, base: datetime | None = None) -> datetime:

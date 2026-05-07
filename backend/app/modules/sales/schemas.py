@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, ConfigDict
 
 from app.modules.sales.models import OrderStatus
 
@@ -20,8 +20,7 @@ class CustomerCreate(CustomerBase):
 class CustomerOut(CustomerBase):
     id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SalesOrderItemIn(BaseModel):
@@ -33,8 +32,7 @@ class SalesOrderItemIn(BaseModel):
 class SalesOrderItemOut(SalesOrderItemIn):
     id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SalesOrderCreate(BaseModel):
@@ -54,5 +52,4 @@ class SalesOrderOut(BaseModel):
     customer: CustomerOut | None = None
     items: list[SalesOrderItemOut]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

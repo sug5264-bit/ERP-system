@@ -13,7 +13,7 @@ from app.core.time import utc_now
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user, get_current_internal_user, require_role
@@ -57,8 +57,7 @@ class EDIMessageOut(BaseModel):
     related_resource_id: int | None
     processed_at: object | None  # datetime, but kept loose here
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # --- Inbound: partners post documents ---------------------------------------
