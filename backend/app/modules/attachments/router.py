@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, get_current_internal_user, require_role
 from app.core.config import settings
 from app.core.db import get_db
 from app.modules.attachments.models import Attachment
@@ -16,7 +16,7 @@ from app.modules.auth.models import User
 router = APIRouter(
     prefix="/api/attachments",
     tags=["attachments"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_internal_user)],
 )
 
 

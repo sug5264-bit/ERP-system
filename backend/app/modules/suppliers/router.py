@@ -10,7 +10,12 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import (
+    get_current_internal_user,
+    get_current_user,
+    is_supplier_user,
+    require_role,
+)
 from app.core.db import get_db
 from app.core.pagination import Page, PageParams, paginate
 from app.modules.auth.models import User
@@ -31,6 +36,8 @@ from app.modules.suppliers.schemas import (
     SupplierOut,
 )
 
+# Router-level auth allows supplier users — but the supplier-listing endpoints
+# below require an internal user explicitly.
 router = APIRouter(
     prefix="/api/suppliers",
     tags=["suppliers"],
@@ -38,15 +45,23 @@ router = APIRouter(
 )
 
 
-# ---- Supplier CRUD ---------------------------------------------------------
+# ---- Supplier CRUD (internal-only) -----------------------------------------
 
 
-@router.get("", response_model=Page[SupplierOut])
+@router.get(
+    "",
+    response_model=Page[SupplierOut],
+    dependencies=[Depends(get_current_internal_user)],
+)
 def list_suppliers(params: PageParams = Depends(), db: Session = Depends(get_db)):
     return paginate(db.query(Supplier).order_by(Supplier.code), params)
 
 
-@router.post("", response_model=SupplierOut, dependencies=[Depends(require_role("admin"))])
+@router.post(
+    "",
+    response_model=SupplierOut,
+    dependencies=[Depends(get_current_internal_user), Depends(require_role("admin"))],
+)
 def create_supplier(payload: SupplierIn, db: Session = Depends(get_db)):
     if db.query(Supplier).filter(Supplier.code == payload.code).first():
         raise HTTPException(status_code=400, detail="Code already exists")
@@ -71,14 +86,17 @@ def _scoped_orders(db: Session, user: User):
         selectinload(PurchaseOrder.items),
     )
     role = user.role.value if hasattr(user.role, "value") else str(user.role)
-    if role in ("admin", "manager"):
+    if role in ("admin", "manager", "staff", "viewer"):
         return q
-    # Supplier users only see their own; staff/viewer can see all internally.
-    supplier = (
-        db.query(Supplier).filter(Supplier.portal_user_id == user.id).first()
-    )
-    if supplier:
-        return q.filter(PurchaseOrder.supplier_id == supplier.id)
+    # Supplier-portal users only see their own.
+    if is_supplier_user(user):
+        supplier = (
+            db.query(Supplier).filter(Supplier.portal_user_id == user.id).first()
+        )
+        if supplier:
+            return q.filter(PurchaseOrder.supplier_id == supplier.id)
+        # Supplier role with no linked Supplier — see nothing.
+        return q.filter(PurchaseOrder.id == -1)
     return q
 
 

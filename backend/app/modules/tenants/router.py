@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, get_current_internal_user, require_role
 from app.core.db import get_db
 from app.modules.auth.models import User
 from app.modules.tenants.models import Tenant, UserTenant
@@ -10,7 +10,7 @@ from app.modules.tenants.schemas import TenantCreate, TenantOut, UserTenantAssig
 router = APIRouter(
     prefix="/api/tenants",
     tags=["tenants"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_internal_user)],
 )
 
 

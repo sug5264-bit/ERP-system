@@ -3,7 +3,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, get_current_internal_user, require_role
 from app.core.db import get_db
 from app.core.ws import manager as ws_manager
 from app.modules.approvals import service
@@ -18,21 +18,6 @@ from app.modules.approvals.schemas import (
 from app.modules.auth.models import User
 
 
-def _request_to_out(r) -> dict:
-    """Decode form_data JSON before returning."""
-    return {
-        "id": r.id,
-        "title": r.title,
-        "resource_type": r.resource_type,
-        "resource_id": r.resource_id,
-        "requester_id": r.requester_id,
-        "status": r.status,
-        "current_step": r.current_step,
-        "created_at": r.created_at,
-        "template_id": r.template_id,
-        "form_data": json.loads(r.form_data) if r.form_data else None,
-        "steps": r.steps,
-    }
 
 
 def _template_to_out(t: ApprovalFormTemplate) -> dict:
@@ -49,7 +34,7 @@ def _template_to_out(t: ApprovalFormTemplate) -> dict:
 router = APIRouter(
     prefix="/api/approvals",
     tags=["approvals"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_internal_user)],
 )
 
 
@@ -66,7 +51,7 @@ def list_requests(
         rows = service.list_requests(db, approver_id=current_user.id, status=status)
     else:
         rows = service.list_requests(db, status=status)
-    return [_request_to_out(r) for r in rows]
+    return rows
 
 
 @router.post("", response_model=ApprovalRequestOut)
@@ -101,7 +86,7 @@ def create_request(
     except Exception:
         pass
 
-    return _request_to_out(req)
+    return req
 
 
 def _notify_decision(req, action: str, current_user) -> None:
@@ -144,7 +129,7 @@ def approve(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     _notify_decision(req, "approved", current_user)
-    return _request_to_out(req)
+    return req
 
 
 @router.post("/{request_id}/reject", response_model=ApprovalRequestOut)
@@ -159,7 +144,7 @@ def reject(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     _notify_decision(req, "rejected", current_user)
-    return _request_to_out(req)
+    return req
 
 
 @router.post("/{request_id}/cancel", response_model=ApprovalRequestOut)
@@ -172,7 +157,7 @@ def cancel(
         req = service.cancel(db, request_id, current_user.id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return _request_to_out(req)
+    return req
 
 
 # ---- Form templates --------------------------------------------------------

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.auth import get_current_user, require_module_role
+from app.core.auth import get_current_user, get_current_internal_user, require_module_role
 from app.core.db import get_db
 from app.core.pagination import Page, PageParams, paginate
 from app.modules.finance import service
@@ -16,7 +16,7 @@ from app.modules.finance.schemas import (
 router = APIRouter(
     prefix="/api/finance",
     tags=["finance"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_internal_user)],
 )
 
 

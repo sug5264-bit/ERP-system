@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, get_current_internal_user, require_role
 from app.core.db import get_db
 from app.modules.finance.models import Account, JournalLine
 from app.modules.hr.models import Department, Employee
@@ -18,7 +18,7 @@ from app.modules.sales.models import OrderStatus, SalesOrder
 router = APIRouter(
     prefix="/api/reports",
     tags=["reports"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_internal_user)],
 )
 
 

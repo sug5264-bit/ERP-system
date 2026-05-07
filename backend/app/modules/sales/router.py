@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.auth import get_current_user, require_module_role
+from app.core.auth import get_current_user, get_current_internal_user, require_module_role
 from app.core.db import get_db
 from app.core.exports import export_table
 from app.core.pagination import Page, PageParams, paginate
@@ -20,7 +20,7 @@ from app.modules.tenants.router import get_current_tenant_id
 router = APIRouter(
     prefix="/api/sales",
     tags=["sales"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_internal_user)],
 )
 
 

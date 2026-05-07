@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, get_current_internal_user, require_role
 from app.core.db import get_db
 from app.core.pagination import Page, PageParams, paginate
 from app.modules.auth.models import User
@@ -30,7 +30,7 @@ from app.modules.edi.models import (
 router = APIRouter(
     prefix="/api/edi",
     tags=["edi"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_internal_user)],
 )
 
 
@@ -92,30 +92,45 @@ def process_message(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Try to translate a stored EDI message into ERP entities.
+    """Translate a stored EDI message into ERP entities.
 
-    Currently supports:
-      • inbound purchase_order  → creates a SalesOrder + Customer (if needed)
+    Idempotent: re-processing a message is a no-op (returns existing result).
+    Transactional: failures roll back any partial entities the handler created.
     """
-    msg = db.query(EDIMessage).filter(EDIMessage.id == message_id).first()
+    msg = (
+        db.query(EDIMessage)
+        .filter(EDIMessage.id == message_id)
+        .with_for_update()
+        .first()
+    )
     if not msg:
         raise HTTPException(status_code=404, detail="Not found")
-    if msg.status == EDIStatus.processed:
+    if msg.status in (EDIStatus.processed, EDIStatus.sent):
         return msg
 
     try:
-        if msg.direction == EDIDirection.inbound and msg.msg_type == EDIMessageType.purchase_order:
-            order = _process_inbound_po(db, msg, user)
-            msg.related_resource_type = "sales_order"
-            msg.related_resource_id = order.id
-            msg.status = EDIStatus.processed
-            msg.processed_at = utc_now()
-        else:
-            msg.status = EDIStatus.parsed  # acknowledged but no automation
+        # SAVEPOINT — failure inside the handler rolls back any rows it created
+        # without losing the outer state-change on `msg` itself.
+        with db.begin_nested():
+            if (
+                msg.direction == EDIDirection.inbound
+                and msg.msg_type == EDIMessageType.purchase_order
+            ):
+                order = _process_inbound_po(db, msg, user)
+                msg.related_resource_type = "sales_order"
+                msg.related_resource_id = order.id
+                msg.status = EDIStatus.processed
+                msg.processed_at = utc_now()
+                msg.error = None
+            else:
+                msg.status = EDIStatus.parsed  # acknowledged but no automation
         db.commit()
         db.refresh(msg)
         return msg
     except Exception as exc:
+        db.rollback()
+        # Re-fetch and mark failed in a fresh transaction.
+        msg = db.query(EDIMessage).filter(EDIMessage.id == message_id).first()
         msg.status = EDIStatus.failed
         msg.error = str(exc)[:2000]
         db.commit()
@@ -182,8 +197,8 @@ def _process_inbound_po(db: Session, msg: EDIMessage, user: User):
     order.total = total
 
     db.add(order)
-    db.commit()
-    db.refresh(order)
+    # Caller wraps this in a SAVEPOINT and a final commit; just flush so we get an id.
+    db.flush()
     return order
 
 

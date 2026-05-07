@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_module_role
+from app.core.auth import get_current_user, get_current_internal_user, require_module_role
 from app.core.db import get_db
 from app.core.exports import export_table
 from app.core.pagination import Page, PageParams, paginate
@@ -19,7 +19,7 @@ from app.modules.inventory.schemas import (
 router = APIRouter(
     prefix="/api/inventory",
     tags=["inventory"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_internal_user)],
 )
 
 

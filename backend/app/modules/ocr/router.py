@@ -9,7 +9,7 @@ import re
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_module_role
+from app.core.auth import get_current_user, get_current_internal_user, require_module_role
 from app.core.db import get_db
 from app.modules.auth.models import User
 from app.modules.inventory.models import Item
@@ -17,7 +17,7 @@ from app.modules.inventory.models import Item
 router = APIRouter(
     prefix="/api/ocr",
     tags=["ocr"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_internal_user)],
 )
 
 LINE_RE = re.compile(

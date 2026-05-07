@@ -1,6 +1,8 @@
+import json
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.modules.approvals.models import ApprovalStatus
 
@@ -46,6 +48,16 @@ class ApprovalRequestOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+    @field_validator("form_data", mode="before")
+    @classmethod
+    def _decode_form_data(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except json.JSONDecodeError:
+                return None
+        return v
 
 
 class ApprovalDecision(BaseModel):

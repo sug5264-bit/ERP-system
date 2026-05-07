@@ -8,11 +8,16 @@ from app.core.base_model import BaseEntity
 
 
 class Role(str, PyEnum):
-    """Application roles. Higher roles inherit lower-role permissions via require_role."""
-    admin = "admin"      # full access (system, all modules)
-    manager = "manager"  # can write in all business modules
-    staff = "staff"      # can read all, write limited (e.g. own records)
-    viewer = "viewer"    # read-only
+    """Application roles. Higher roles inherit lower-role permissions via require_role.
+
+    `supplier` is an external role: a portal user that may only see/act on
+    their own Supplier's purchase orders. They cannot access other modules.
+    """
+    admin = "admin"
+    manager = "manager"
+    staff = "staff"
+    viewer = "viewer"
+    supplier = "supplier"
 
 
 class User(BaseEntity):

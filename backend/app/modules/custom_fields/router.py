@@ -4,14 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, get_current_internal_user, require_role
 from app.core.db import get_db
 from app.modules.custom_fields.models import FieldDefinition, FieldType, FieldValue
 
 router = APIRouter(
     prefix="/api/custom-fields",
     tags=["custom_fields"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_internal_user)],
 )
 
 

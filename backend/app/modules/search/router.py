@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, get_current_internal_user
 from app.core.db import get_db
 from app.modules.finance.models import Account, JournalEntry
 from app.modules.hr.models import Department, Employee
@@ -12,7 +12,7 @@ from app.modules.sales.models import Customer, SalesOrder
 router = APIRouter(
     prefix="/api/search",
     tags=["search"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_internal_user)],
 )
 
 

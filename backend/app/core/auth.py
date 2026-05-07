@@ -11,8 +11,10 @@ from app.core.security import decode_token
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
-# Role precedence: viewer < staff < manager < admin
-_ROLE_ORDER = {"viewer": 0, "staff": 1, "manager": 2, "admin": 3}
+# Role precedence: supplier (external, isolated) < viewer < staff < manager < admin
+# `supplier` deliberately sits below viewer so role checks like require_role("viewer")
+# block them from generic modules; supplier-portal endpoints accept it explicitly.
+_ROLE_ORDER = {"supplier": -1, "viewer": 0, "staff": 1, "manager": 2, "admin": 3}
 
 
 def _role_value(role) -> str:
@@ -117,3 +119,21 @@ def require_module_role(module: str, min_role: str):
         return user
 
     return _checker
+
+
+def is_supplier_user(user) -> bool:
+    return _role_value(user.role) == "supplier"
+
+
+def get_current_internal_user(user=Depends(get_current_user)):
+    """Like `get_current_user`, but blocks supplier-portal accounts.
+
+    Use this on every router whose endpoints should be invisible to suppliers.
+    Supplier accounts only get into the suppliers/* and auth/* surfaces.
+    """
+    if is_supplier_user(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Supplier portal users cannot access this module",
+        )
+    return user

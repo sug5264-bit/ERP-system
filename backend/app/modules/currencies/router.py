@@ -4,7 +4,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, get_current_internal_user, require_role
 from app.core.db import get_db
 from app.modules.currencies import service
 from app.modules.currencies.models import Currency, ExchangeRate
@@ -19,7 +19,7 @@ from app.modules.currencies.schemas import (
 router = APIRouter(
     prefix="/api/currencies",
     tags=["currencies"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_internal_user)],
 )
 
 

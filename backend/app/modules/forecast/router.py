@@ -11,14 +11,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, get_current_internal_user
 from app.core.db import get_db
 from app.modules.inventory.models import Item, MovementType, StockMovement
 
 router = APIRouter(
     prefix="/api/forecast",
     tags=["forecast"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_internal_user)],
 )
 
 

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from jose import JWTError
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import get_current_user, get_current_internal_user, require_role
 from app.core.db import SessionLocal, get_db
 from app.core.email import send_email_safe
 from app.core.security import decode_token
@@ -16,7 +16,7 @@ from app.modules.sales.models import OrderStatus, SalesOrder
 router = APIRouter(
     prefix="/api/notifications",
     tags=["notifications"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_internal_user)],
 )
 
 
