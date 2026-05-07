@@ -76,7 +76,7 @@ def list_orders(
 
 @router.get("/orders/export")
 def export_orders(
-    format: str = Query("csv"),
+    format: str = Query("csv"), inline: bool = Query(False),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -94,7 +94,7 @@ def export_orders(
         ]
         for o in orders
     ]
-    return export_table(rows, headers, "orders", format)
+    return export_table(rows, headers, "orders", format, inline=inline)
 
 
 @router.post(

@@ -34,6 +34,30 @@ ALLOWED_EXTENSIONS = {
 }
 
 
+# Image MIME → magic-byte signatures. We only sniff the easy cases; if the
+# extension is in our whitelist but magic doesn't match, reject as a defence
+# against polyglot files (e.g. an .exe renamed to .png).
+MAGIC_SIGNATURES: dict[str, list[bytes]] = {
+    ".pdf": [b"%PDF-"],
+    ".png": [b"\x89PNG\r\n\x1a\n"],
+    ".jpg": [b"\xff\xd8\xff"],
+    ".jpeg": [b"\xff\xd8\xff"],
+    ".gif": [b"GIF87a", b"GIF89a"],
+    ".webp": [b"RIFF"],  # RIFF....WEBP
+    ".zip": [b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"],
+    ".xlsx": [b"PK\x03\x04"],
+    ".docx": [b"PK\x03\x04"],
+    ".pptx": [b"PK\x03\x04"],
+}
+
+
+def _magic_ok(suffix: str, head: bytes) -> bool:
+    sigs = MAGIC_SIGNATURES.get(suffix)
+    if not sigs:
+        return True  # types without a sig (txt, csv, json, etc.)
+    return any(head.startswith(s) for s in sigs)
+
+
 @router.post("", response_model=AttachmentOut)
 async def upload(
     file: UploadFile = File(...),
@@ -57,24 +81,54 @@ async def upload(
     stored_name = f"{uuid.uuid4().hex}{suffix}"
     target = _storage_dir() / stored_name
 
-    contents = await file.read()
-    if len(contents) > settings.upload_max_bytes:
-        raise HTTPException(status_code=413, detail="File too large")
+    # Stream-write to disk in chunks so we don't hold the whole file in RAM.
+    # Enforce the size cap as we go.
+    written = 0
+    chunk_size = 64 * 1024
+    first_chunk = b""
+    try:
+        with open(target, "wb") as out:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                if not first_chunk:
+                    first_chunk = chunk[:16]
+                written += len(chunk)
+                if written > settings.upload_max_bytes:
+                    raise HTTPException(status_code=413, detail="File too large")
+                out.write(chunk)
+    except HTTPException:
+        target.unlink(missing_ok=True)
+        raise
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
 
-    with open(target, "wb") as f:
-        f.write(contents)
+    if not _magic_ok(suffix, first_chunk):
+        target.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=415,
+            detail=f"File contents don't match {suffix} signature",
+        )
 
     attachment = Attachment(
         related_type=related_type,
         related_id=related_id,
         filename=safe_basename or stored_name,
         content_type=file.content_type or "application/octet-stream",
-        size=len(contents),
+        size=written,
         storage_path=str(target),
         uploaded_by=current_user.id,
     )
     db.add(attachment)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        # Clean up the orphan file so we don't leak disk space.
+        target.unlink(missing_ok=True)
+        raise
     db.refresh(attachment)
     return attachment
 

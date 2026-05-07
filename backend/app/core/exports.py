@@ -17,15 +17,17 @@ from fastapi.responses import StreamingResponse
 ExportFormat = str  # "csv" | "xlsx" | "pdf"
 
 
-def _content_disposition(filename: str) -> str:
+def _content_disposition(filename: str, *, inline: bool = False) -> str:
     """Build a Content-Disposition header that handles non-ASCII filenames.
 
-    Provides both an ASCII fallback (`filename=`) and the UTF-8 RFC 5987 form
-    (`filename*=UTF-8''…`) so old clients still get something sane.
+    `inline=True` lets the browser preview (e.g. PDF in a tab) instead of
+    forcing a download. Provides both an ASCII fallback (`filename=`) and
+    the UTF-8 RFC 5987 form (`filename*=UTF-8''…`) for old clients.
     """
+    disposition = "inline" if inline else "attachment"
     ascii_fallback = filename.encode("ascii", "ignore").decode("ascii") or "download"
     encoded = quote(filename, safe="")
-    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
+    return f"{disposition}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
 
 
 def export_table(
@@ -33,6 +35,7 @@ def export_table(
     headers: list[str],
     filename: str,
     fmt: ExportFormat = "csv",
+    inline: bool = False,
 ) -> StreamingResponse:
     fmt = (fmt or "csv").lower()
     if fmt == "csv":
@@ -40,20 +43,27 @@ def export_table(
     if fmt in ("xlsx", "excel"):
         return _xlsx(rows, headers, filename)
     if fmt == "pdf":
-        return _pdf(rows, headers, filename)
+        return _pdf(rows, headers, filename, inline=inline)
     raise HTTPException(status_code=400, detail=f"Unsupported format: {fmt}")
 
 
 def _csv(rows, headers, filename) -> StreamingResponse:
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(headers)
-    for row in rows:
-        writer.writerow(row)
-    # UTF-8 BOM so Excel opens Korean correctly without mojibake.
-    data = "﻿" + buf.getvalue()
+    # Stream row-by-row so we never hold the whole table in memory.
+    def generate():
+        # UTF-8 BOM first so Excel auto-detects encoding.
+        yield "﻿".encode("utf-8")
+        line = io.StringIO()
+        writer = csv.writer(line)
+        writer.writerow(headers)
+        yield line.getvalue().encode("utf-8")
+        for row in rows:
+            line.seek(0)
+            line.truncate()
+            writer.writerow(row)
+            yield line.getvalue().encode("utf-8")
+
     return StreamingResponse(
-        iter([data.encode("utf-8")]),
+        generate(),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": _content_disposition(f"{filename}.csv")},
     )
@@ -149,10 +159,14 @@ def render_pdf_bytes(rows, headers, title: str) -> bytes:
     return buf.getvalue()
 
 
-def _pdf(rows, headers, filename) -> StreamingResponse:
+def _pdf(rows, headers, filename, inline: bool = False) -> StreamingResponse:
     pdf_bytes = render_pdf_bytes(rows, headers, filename)
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
-        headers={"Content-Disposition": _content_disposition(f"{filename}.pdf")},
+        headers={
+            "Content-Disposition": _content_disposition(
+                f"{filename}.pdf", inline=inline
+            )
+        },
     )

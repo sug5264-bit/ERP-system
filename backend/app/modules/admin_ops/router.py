@@ -70,9 +70,17 @@ def backup(
         else:
             payload[table.name] = [_scrub(table.name, dict(row)) for row in rows]
 
+    try:
+        schema_version = db.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar()
+    except Exception:
+        schema_version = None
+
     body = json.dumps(
         {
             "exported_at": utc_now().isoformat(),
+            "schema_version": schema_version,
             "redacted": not include_secrets,
             "tables": payload,
         },
@@ -95,7 +103,12 @@ async def restore(
     truncate_first: bool = Query(False),
     db: Session = Depends(get_db),
 ):
-    """Restore from a backup file. With truncate_first=true, wipes existing data first."""
+    """Restore from a backup file.
+
+    Security: column names from the uploaded JSON are validated against
+    the actual table schema BEFORE any SQL is built — this stops a tampered
+    backup from injecting SQL via crafted dict keys.
+    """
     raw = await file.read()
     try:
         doc = json.loads(raw.decode("utf-8"))
@@ -105,7 +118,36 @@ async def restore(
     if not isinstance(doc, dict) or "tables" not in doc:
         raise HTTPException(status_code=400, detail="Invalid backup format")
 
-    tables = doc["tables"]
+    # Refuse to restore a redacted dump — it would null-out password hashes.
+    if doc.get("redacted") is True:
+        raise HTTPException(
+            status_code=400,
+            detail="Refusing to restore a redacted backup. Re-export with include_secrets=true.",
+        )
+
+    # Validate alembic version matches — restoring across schema changes will
+    # silently corrupt data.
+    backup_version = doc.get("schema_version")
+    try:
+        current_version = db.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar()
+    except Exception:
+        current_version = None
+    if backup_version and current_version and backup_version != current_version:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Backup is from schema {backup_version} but the running DB is "
+                f"on {current_version}. Migrate one to match before restoring."
+            ),
+        )
+
+    tables_payload = doc["tables"]
+    # Build a {table_name: set(allowed_columns)} map from the actual schema.
+    schema_columns = {
+        t.name: {c.name for c in t.columns} for t in Base.metadata.sorted_tables
+    }
     inserted = 0
 
     if truncate_first:
@@ -113,11 +155,18 @@ async def restore(
             db.execute(text(f"DELETE FROM {table.name}"))
 
     for table in Base.metadata.sorted_tables:
-        rows = tables.get(table.name)
+        rows = tables_payload.get(table.name)
         if not rows:
             continue
-        for row in rows:
-            cols = ", ".join(row.keys())
+        allowed = schema_columns[table.name]
+        for raw_row in rows:
+            if not isinstance(raw_row, dict):
+                continue
+            # Drop unknown keys — both an injection guard and forward-compat.
+            row = {k: v for k, v in raw_row.items() if k in allowed}
+            if not row:
+                continue
+            cols = ", ".join(row.keys())  # safe: keys are from a static set
             placeholders = ", ".join(f":{k}" for k in row.keys())
             try:
                 db.execute(
@@ -126,11 +175,15 @@ async def restore(
                 )
                 inserted += 1
             except Exception:
-                # Skip rows that conflict; surface count instead of failing whole restore.
+                # Skip individual row conflicts; report aggregate count.
                 continue
 
     db.commit()
-    return {"tables": list(tables.keys()), "rows_inserted": inserted}
+    return {
+        "tables": list(tables_payload.keys()),
+        "rows_inserted": inserted,
+        "schema_version": current_version,
+    }
 
 
 # ---- Excel import -----------------------------------------------------------

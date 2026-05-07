@@ -29,7 +29,7 @@ def list_items(params: PageParams = Depends(), db: Session = Depends(get_db)):
 
 
 @router.get("/items/export")
-def export_items(format: str = Query("csv"), db: Session = Depends(get_db)):
+def export_items(format: str = Query("csv"), inline: bool = Query(False), db: Session = Depends(get_db)):
     items = service.list_items(db)
     headers = ["SKU", "품목명", "단위", "단가", "재고", "재고가치"]
     rows = [
@@ -43,7 +43,7 @@ def export_items(format: str = Query("csv"), db: Session = Depends(get_db)):
         ]
         for i in items
     ]
-    return export_table(rows, headers, "items", format)
+    return export_table(rows, headers, "items", format, inline=inline)
 
 
 @router.post(

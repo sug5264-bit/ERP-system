@@ -47,7 +47,7 @@ def list_employees(params: PageParams = Depends(), db: Session = Depends(get_db)
 
 
 @router.get("/employees/export")
-def export_employees(format: str = Query("csv"), db: Session = Depends(get_db)):
+def export_employees(format: str = Query("csv"), inline: bool = Query(False), db: Session = Depends(get_db)):
     employees = service.list_employees(db)
     headers = ["사번", "이름", "이메일", "직책", "부서", "급여", "입사일"]
     rows = [
@@ -62,7 +62,7 @@ def export_employees(format: str = Query("csv"), db: Session = Depends(get_db)):
         ]
         for e in employees
     ]
-    return export_table(rows, headers, "employees", format)
+    return export_table(rows, headers, "employees", format, inline=inline)
 
 
 @router.post(

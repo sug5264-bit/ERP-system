@@ -45,7 +45,7 @@ def list_logs(
 
 
 @router.get("/logs/export")
-def export_logs(format: str = Query("csv"), db: Session = Depends(get_db)):
+def export_logs(format: str = Query("csv"), inline: bool = Query(False), db: Session = Depends(get_db)):
     logs = db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(1000).all()
     headers = ["시간", "사용자", "메서드", "경로", "상태", "IP", "Payload"]
     rows = [
@@ -60,4 +60,4 @@ def export_logs(format: str = Query("csv"), db: Session = Depends(get_db)):
         ]
         for l in logs
     ]
-    return export_table(rows, headers, "audit_logs", format)
+    return export_table(rows, headers, "audit_logs", format, inline=inline)
