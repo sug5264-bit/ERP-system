@@ -4,11 +4,14 @@ export default function Pager({
   page,
   pages,
   total,
+  size = 20,
   onChange,
 }: {
   page: number;
   pages: number;
   total: number;
+  /** Items per page — must match what was sent to the server. */
+  size?: number;
   onChange: (p: number) => void;
 }) {
   if (pages <= 1) {
@@ -18,10 +21,12 @@ export default function Pager({
   }
   const prev = Math.max(1, page - 1);
   const next = Math.min(pages, page + 1);
+  const from = (page - 1) * size + 1;
+  const to = Math.min(page * size, total);
   return (
     <div className="flex items-center justify-between mt-3 text-sm">
       <span className="text-slate-500">
-        {(page - 1) * 20 + 1}-{Math.min(page * 20, total)} / 총 {total}건
+        {from}-{to} / 총 {total}건
       </span>
       <div className="flex gap-1">
         <button

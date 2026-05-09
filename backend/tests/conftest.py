@@ -24,7 +24,7 @@ from app.main import app
 
 
 @pytest.fixture
-def db_session():
+def db_session(monkeypatch):
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -37,8 +37,19 @@ def db_session():
         import_module(f"app.modules.{m}.models")
 
     Base.metadata.create_all(bind=engine)
-    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    session = Session()
+    TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    # Middleware (audit, scheduler) uses app.core.db.SessionLocal directly —
+    # repoint it at the test engine so its writes land in the same in-memory
+    # DB the test fixture inspects.
+    import app.core.db as _db_mod
+    monkeypatch.setattr(_db_mod, "SessionLocal", TestSession)
+    # Some modules import SessionLocal at module load time; patch their
+    # references too.
+    import app.core.audit_middleware as _audit_mw
+    monkeypatch.setattr(_audit_mw, "SessionLocal", TestSession)
+
+    session = TestSession()
     try:
         yield session
     finally:

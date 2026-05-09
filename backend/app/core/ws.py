@@ -49,15 +49,29 @@ class WSManager:
             except Exception:
                 await self.disconnect(uid, ws)
 
+    def _has_target(self, user_id: int | None) -> bool:
+        if user_id is None:
+            return bool(self._connections)
+        return bool(self._connections.get(user_id))
+
     def emit(self, user_id: int | None, payload: dict[str, Any]) -> None:
-        """Schedule a send from sync code onto the main event loop."""
-        coro = self.send_to_user(user_id, payload) if user_id else self.broadcast(payload)
+        """Schedule a send from sync code onto the main event loop.
+
+        Short-circuits when there's no recipient connection, so we don't
+        leak un-awaited coroutines (e.g. in tests / single-process boots
+        before any WS client has attached).
+        """
+        if not self._has_target(user_id):
+            return  # nothing to send — drop silently
+
         loop = self._loop
         if loop is None:
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
                 return  # no loop yet (tests/seed) — drop the message
+
+        coro = self.send_to_user(user_id, payload) if user_id else self.broadcast(payload)
         try:
             running = asyncio.get_running_loop()
             if running is loop:

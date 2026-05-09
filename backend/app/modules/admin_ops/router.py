@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import require_role
 from app.core.db import Base, engine, get_db
+from app.core.exports import _content_disposition
 
 router = APIRouter(
     prefix="/api/admin",
@@ -55,21 +56,11 @@ def backup(
     include_secrets: bool = Query(False),
     db: Session = Depends(get_db),
 ):
-    """Dump every table to a JSON document.
+    """Dump every table to a JSON document — streamed row-by-row.
 
     By default password / token hashes are redacted. Pass
     `include_secrets=true` only when restoring to the same instance.
     """
-    payload: dict[str, list[dict]] = {}
-    for table in Base.metadata.sorted_tables:
-        rows = db.execute(text(f"SELECT * FROM {table.name}")).mappings().all()
-        if include_secrets:
-            payload[table.name] = [
-                {k: _serialise(v) for k, v in row.items()} for row in rows
-            ]
-        else:
-            payload[table.name] = [_scrub(table.name, dict(row)) for row in rows]
-
     try:
         schema_version = db.execute(
             text("SELECT version_num FROM alembic_version")
@@ -77,21 +68,41 @@ def backup(
     except Exception:
         schema_version = None
 
-    body = json.dumps(
-        {
-            "exported_at": utc_now().isoformat(),
-            "schema_version": schema_version,
-            "redacted": not include_secrets,
-            "tables": payload,
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
-    from app.core.exports import _content_disposition
+    def stream_json():
+        # Header
+        yield (
+            '{\n'
+            f'  "exported_at": {json.dumps(utc_now().isoformat())},\n'
+            f'  "schema_version": {json.dumps(schema_version)},\n'
+            f'  "redacted": {json.dumps(not include_secrets)},\n'
+            '  "tables": {\n'
+        ).encode("utf-8")
 
+        for t_idx, table in enumerate(Base.metadata.sorted_tables):
+            sep = "," if t_idx > 0 else ""
+            yield f"{sep}\n    {json.dumps(table.name)}: [".encode("utf-8")
+
+            # Stream rows; yield_per cuts memory on large tables.
+            cursor = db.execute(text(f"SELECT * FROM {table.name}")).yield_per(500)
+            first = True
+            for raw in cursor.mappings():
+                obj = (
+                    {k: _serialise(v) for k, v in raw.items()}
+                    if include_secrets
+                    else _scrub(table.name, dict(raw))
+                )
+                prefix = "" if first else ","
+                first = False
+                yield (prefix + "\n      " + json.dumps(obj, ensure_ascii=False)).encode("utf-8")
+
+            yield b"\n    ]"
+
+        yield b"\n  }\n}\n"
+
+    body_iter = stream_json()
     stamp = utc_now().strftime("%Y%m%d-%H%M%S")
     return StreamingResponse(
-        iter([body.encode("utf-8")]),
+        body_iter,
         media_type="application/json",
         headers={"Content-Disposition": _content_disposition(f"erp-backup-{stamp}.json")},
     )
