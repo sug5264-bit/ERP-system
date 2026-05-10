@@ -1436,3 +1436,225 @@ def test_erase_user_anonymizes_pii(client, admin_auth, db_session):
     assert "anonymized.local" in u2.email
     assert e2.full_name == "ERASED"
     assert "anonymized.local" in e2.email
+
+
+# --- Phase 7: balance sheet, cash flow, VAT, WMS --------------------------
+
+
+def test_balance_sheet_balanced(client, admin_auth, db_session):
+    """Assets = Liabilities + Equity (with retained earnings)."""
+    from app.modules.finance.models import Account, AccountType, JournalEntry, JournalLine
+
+    cash = Account(code="BS-1", name="현금", type=AccountType.asset)
+    cap = Account(code="BS-2", name="자본금", type=AccountType.equity)
+    rev = Account(code="BS-3", name="매출", type=AccountType.revenue)
+    db_session.add_all([cash, cap, rev])
+    db_session.flush()
+    # Capital injection: Dr cash 1000 / Cr equity 1000
+    e1 = JournalEntry(entry_date=date(2026, 1, 1), description="seed")
+    e1.lines.append(JournalLine(account_id=cash.id, debit=1000, credit=0))
+    e1.lines.append(JournalLine(account_id=cap.id, debit=0, credit=1000))
+    # Sale: Dr cash 200 / Cr revenue 200
+    e2 = JournalEntry(entry_date=date(2026, 1, 5), description="sale")
+    e2.lines.append(JournalLine(account_id=cash.id, debit=200, credit=0))
+    e2.lines.append(JournalLine(account_id=rev.id, debit=0, credit=200))
+    db_session.add_all([e1, e2])
+    db_session.commit()
+
+    res = client.get(
+        "/api/finance/balance-sheet?as_of=2026-12-31",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["assets"]["total"] == 1200
+    assert body["balanced"] is True
+
+
+def test_cash_flow_classifies_movements(client, admin_auth, db_session):
+    """Cash flow buckets: revenue→operating, asset→investing, liability→financing."""
+    from app.modules.finance.models import Account, AccountType, JournalEntry, JournalLine
+
+    cash = Account(code="1100", name="현금", type=AccountType.asset)
+    rev = Account(code="CF-R", name="매출", type=AccountType.revenue)
+    fixed = Account(code="CF-A", name="비품", type=AccountType.asset)
+    loan = Account(code="CF-L", name="차입금", type=AccountType.liability)
+    db_session.add_all([cash, rev, fixed, loan])
+    db_session.flush()
+
+    # Operating: cash receipt for sales
+    e1 = JournalEntry(entry_date=date(2026, 4, 5))
+    e1.description = "sale receipt"
+    e1.lines.append(JournalLine(account_id=cash.id, debit=500, credit=0))
+    e1.lines.append(JournalLine(account_id=rev.id, debit=0, credit=500))
+    # Investing: bought equipment
+    e2 = JournalEntry(entry_date=date(2026, 4, 10))
+    e2.description = "buy equipment"
+    e2.lines.append(JournalLine(account_id=fixed.id, debit=300, credit=0))
+    e2.lines.append(JournalLine(account_id=cash.id, debit=0, credit=300))
+    # Financing: took a loan
+    e3 = JournalEntry(entry_date=date(2026, 4, 15))
+    e3.description = "loan"
+    e3.lines.append(JournalLine(account_id=cash.id, debit=1000, credit=0))
+    e3.lines.append(JournalLine(account_id=loan.id, debit=0, credit=1000))
+    db_session.add_all([e1, e2, e3])
+    db_session.commit()
+
+    res = client.get(
+        "/api/finance/cash-flow?start=2026-04-01&end=2026-04-30",
+        headers=admin_auth["headers"],
+    )
+    body = res.json()
+    assert body["operating"] == 500
+    assert body["investing"] == -300
+    assert body["financing"] == 1000
+    assert body["net_change"] == 1200
+
+
+def test_vat_return_summary(client, admin_auth, db_session):
+    """VAT return = output VAT (sales) - input VAT (purchase)."""
+    from app.modules.etax.models import ETaxInvoice, ETaxStatus, ETaxType
+
+    db_session.add_all([
+        ETaxInvoice(
+            type=ETaxType.sales, status=ETaxStatus.accepted,
+            issued_date=date(2026, 4, 10),
+            supplier_business_no="2208162517", supplier_name="us",
+            buyer_business_no="2208162517", buyer_name="customer",
+            item_summary="x", subtotal=Decimal("1000"), tax=Decimal("100"),
+            total=Decimal("1100"),
+        ),
+        ETaxInvoice(
+            type=ETaxType.purchase, status=ETaxStatus.accepted,
+            issued_date=date(2026, 4, 12),
+            supplier_business_no="2208162517", supplier_name="vendor",
+            buyer_business_no="2208162517", buyer_name="us",
+            item_summary="y", subtotal=Decimal("400"), tax=Decimal("40"),
+            total=Decimal("440"),
+        ),
+    ])
+    db_session.commit()
+
+    res = client.get(
+        "/api/finance/vat-return?start=2026-04-01&end=2026-06-30",
+        headers=admin_auth["headers"],
+    )
+    body = res.json()
+    assert body["sales"]["vat_amount"] == 100
+    assert body["purchase"]["vat_amount"] == 40
+    assert body["payable_or_refund"] == 60
+    assert body["is_refund"] is False
+
+
+def test_wms_full_flow(client, admin_auth, db_session):
+    """End-to-end: order confirm → pick list → pick → pack → ship → deliver."""
+    from app.modules.inventory.models import Item
+    from app.modules.sales.models import Customer, OrderStatus, SalesOrder, SalesOrderItem
+
+    item = Item(sku="WMS-1", name="배송품", stock_qty=Decimal("100"),
+                unit_price=Decimal("10"))
+    cust = Customer(name="배송고객")
+    db_session.add_all([item, cust])
+    db_session.flush()
+    so = SalesOrder(order_no="SO-WMS-1", customer_id=cust.id,
+                    status=OrderStatus.confirmed, total=Decimal("100"))
+    so.items.append(
+        SalesOrderItem(item_id=item.id, quantity=Decimal("10"),
+                       unit_price=Decimal("10"))
+    )
+    db_session.add(so)
+    db_session.commit()
+
+    # Generate pick list
+    pl_res = client.post(
+        f"/api/wms/pick-lists/from-order/{so.id}",
+        headers=admin_auth["headers"],
+    )
+    assert pl_res.status_code == 200, pl_res.text
+    pl_id = pl_res.json()["id"]
+
+    # Start picking
+    start = client.post(f"/api/wms/pick-lists/{pl_id}/start",
+                        headers=admin_auth["headers"])
+    assert start.json()["status"] == "picking"
+
+    # Complete picking
+    complete = client.post(
+        f"/api/wms/pick-lists/{pl_id}/complete",
+        headers=admin_auth["headers"],
+        json={"items": [{"item_id": item.id, "picked_qty": 10}]},
+    )
+    assert complete.status_code == 200, complete.text
+    assert complete.json()["status"] == "picked"
+
+    # Pack into shipment
+    ship = client.post(
+        "/api/wms/shipments",
+        headers=admin_auth["headers"],
+        json={
+            "shipment_no": "SHIP-1",
+            "pick_list_id": pl_id,
+            "carrier": "CJ대한통운",
+            "tracking_no": "1234567890",
+            "weight_kg": 2.5,
+            "address_to": "서울시 강남구",
+        },
+    )
+    assert ship.status_code == 200, ship.text
+    sid = ship.json()["id"]
+    assert ship.json()["status"] == "packed"
+
+    # Ship
+    shipped = client.post(f"/api/wms/shipments/{sid}/ship",
+                          headers=admin_auth["headers"])
+    assert shipped.json()["status"] == "shipped"
+
+    # Deliver
+    delivered = client.post(f"/api/wms/shipments/{sid}/deliver",
+                             headers=admin_auth["headers"])
+    assert delivered.json()["status"] == "delivered"
+
+
+def test_wms_return_restocks(client, admin_auth, db_session):
+    """Returning a shipment restocks the picked items."""
+    from app.modules.inventory.models import Item
+    from app.modules.sales.models import Customer, OrderStatus, SalesOrder, SalesOrderItem
+
+    item = Item(sku="WMS-RET-1", name="반품품", stock_qty=Decimal("50"))
+    cust = Customer(name="반품고객")
+    db_session.add_all([item, cust])
+    db_session.flush()
+    so = SalesOrder(order_no="SO-RET-1", customer_id=cust.id,
+                    status=OrderStatus.confirmed, total=Decimal("0"))
+    so.items.append(SalesOrderItem(item_id=item.id, quantity=Decimal("5"),
+                                    unit_price=Decimal("10")))
+    db_session.add(so)
+    db_session.commit()
+
+    pl = client.post(f"/api/wms/pick-lists/from-order/{so.id}",
+                     headers=admin_auth["headers"]).json()
+    client.post(f"/api/wms/pick-lists/{pl['id']}/start", headers=admin_auth["headers"])
+    client.post(
+        f"/api/wms/pick-lists/{pl['id']}/complete",
+        headers=admin_auth["headers"],
+        json={"items": [{"item_id": item.id, "picked_qty": 5}]},
+    )
+    sh = client.post(
+        "/api/wms/shipments",
+        headers=admin_auth["headers"],
+        json={"shipment_no": "SHIP-RET-1", "pick_list_id": pl["id"]},
+    ).json()
+    client.post(f"/api/wms/shipments/{sh['id']}/ship", headers=admin_auth["headers"])
+    client.post(f"/api/wms/shipments/{sh['id']}/deliver",
+                 headers=admin_auth["headers"])
+
+    db_session.refresh(item)
+    stock_before = Decimal(item.stock_qty)
+
+    ret = client.post(f"/api/wms/shipments/{sh['id']}/return",
+                       headers=admin_auth["headers"])
+    assert ret.status_code == 200, ret.text
+    assert ret.json()["status"] == "returned"
+
+    db_session.refresh(item)
+    assert Decimal(item.stock_qty) == stock_before + Decimal("5")

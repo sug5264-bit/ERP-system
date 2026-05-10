@@ -47,6 +47,7 @@ MODULES = [
     "fx",
     "dashboards",
     "privacy",
+    "wms",
 ]
 
 

@@ -327,3 +327,225 @@ def income_statement(
         "expense": float(expense),
         "net_income": float(revenue) - float(expense),
     }
+
+
+# ---- Balance Sheet + Cash Flow + VAT return -------------------------------
+
+
+from decimal import Decimal  # noqa: E402
+
+
+@router.get("/balance-sheet")
+def balance_sheet(
+    as_of: _date | None = None,
+    db: Session = Depends(get_db),
+):
+    """Snapshot of Assets / Liabilities / Equity at `as_of` date.
+
+    Equation: Assets = Liabilities + Equity. Equity includes retained earnings
+    derived from cumulative (revenue - expense) up to `as_of`.
+    """
+    from sqlalchemy import func
+
+    cutoff = as_of or _date.today()
+
+    def _by_type(acc_type: AccountType, debit_minus_credit: bool) -> dict:
+        rows = (
+            db.query(
+                Account.code,
+                Account.name,
+                func.coalesce(func.sum(JournalLine.debit), 0).label("dr"),
+                func.coalesce(func.sum(JournalLine.credit), 0).label("cr"),
+            )
+            .outerjoin(JournalLine, JournalLine.account_id == Account.id)
+            .outerjoin(JournalEntry, JournalEntry.id == JournalLine.entry_id)
+            .filter(Account.type == acc_type)
+            .filter((JournalEntry.entry_date <= cutoff) | (JournalEntry.id.is_(None)))
+            .group_by(Account.id)
+            .all()
+        )
+        items = []
+        total = 0.0
+        for r in rows:
+            bal = (
+                float(r.dr) - float(r.cr) if debit_minus_credit
+                else float(r.cr) - float(r.dr)
+            )
+            if bal == 0:
+                continue
+            items.append({"code": r.code, "name": r.name, "balance": bal})
+            total += bal
+        return {"items": items, "total": total}
+
+    assets = _by_type(AccountType.asset, debit_minus_credit=True)
+    liabilities = _by_type(AccountType.liability, debit_minus_credit=False)
+    equity = _by_type(AccountType.equity, debit_minus_credit=False)
+
+    # Retained earnings = cumulative (revenue - expense) up to cutoff
+    rev_total = (
+        db.query(
+            func.coalesce(func.sum(JournalLine.credit - JournalLine.debit), 0)
+        )
+        .join(Account, Account.id == JournalLine.account_id)
+        .join(JournalEntry, JournalEntry.id == JournalLine.entry_id)
+        .filter(Account.type == AccountType.revenue)
+        .filter(JournalEntry.entry_date <= cutoff)
+        .scalar()
+        or 0
+    )
+    exp_total = (
+        db.query(
+            func.coalesce(func.sum(JournalLine.debit - JournalLine.credit), 0)
+        )
+        .join(Account, Account.id == JournalLine.account_id)
+        .join(JournalEntry, JournalEntry.id == JournalLine.entry_id)
+        .filter(Account.type == AccountType.expense)
+        .filter(JournalEntry.entry_date <= cutoff)
+        .scalar()
+        or 0
+    )
+    retained = float(rev_total) - float(exp_total)
+    equity["items"].append(
+        {"code": "_RE", "name": "이익잉여금 (계산값)", "balance": retained}
+    )
+    equity["total"] += retained
+
+    return {
+        "as_of": cutoff.isoformat(),
+        "assets": assets,
+        "liabilities": liabilities,
+        "equity": equity,
+        "total_liab_eq": liabilities["total"] + equity["total"],
+        "balanced": abs(assets["total"] - (liabilities["total"] + equity["total"])) < 0.01,
+    }
+
+
+@router.get("/cash-flow")
+def cash_flow(
+    start: _date,
+    end: _date,
+    cash_account_codes: str = "1100,1110,1120",
+    db: Session = Depends(get_db),
+):
+    """Indirect-method cash flow over [start, end].
+
+    The cash account codes (default = 현금/예금/단기금융상품 / 1100·1110·1120)
+    are aggregated by movement type derived from the *paired* account on each
+    entry — sales receipts, vendor payments, payroll outflows, etc.
+
+    Returns:
+        operating: sum of cash flows tagged via revenue / expense paired accounts
+        investing: paired with asset (1300+) / fixed-asset (12xx)
+        financing: paired with liability / equity
+    """
+    from sqlalchemy import func
+
+    cash_codes = [c.strip() for c in cash_account_codes.split(",") if c.strip()]
+    cash_account_ids = [
+        a.id for a in db.query(Account).filter(Account.code.in_(cash_codes)).all()
+    ]
+    if not cash_account_ids:
+        raise HTTPException(status_code=400, detail="No matching cash accounts")
+
+    # For each journal line on a cash account, find the contra (other) lines
+    # in the same entry to classify the cash movement.
+    entries = (
+        db.query(JournalEntry)
+        .join(JournalLine, JournalLine.entry_id == JournalEntry.id)
+        .filter(JournalLine.account_id.in_(cash_account_ids))
+        .filter(JournalEntry.entry_date.between(start, end))
+        .distinct()
+        .all()
+    )
+
+    operating = Decimal("0")
+    investing = Decimal("0")
+    financing = Decimal("0")
+    for entry in entries:
+        cash_delta = Decimal("0")
+        contra_type: AccountType | None = None
+        for line in entry.lines:
+            if line.account_id in cash_account_ids:
+                cash_delta += Decimal(line.debit) - Decimal(line.credit)
+            else:
+                acc = db.query(Account).filter(Account.id == line.account_id).first()
+                if acc and contra_type is None:
+                    contra_type = acc.type
+        if contra_type in (AccountType.revenue, AccountType.expense):
+            operating += cash_delta
+        elif contra_type == AccountType.asset:
+            investing += cash_delta
+        elif contra_type in (AccountType.liability, AccountType.equity):
+            financing += cash_delta
+        else:
+            operating += cash_delta  # default bucket
+
+    net = operating + investing + financing
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "operating": float(operating),
+        "investing": float(investing),
+        "financing": float(financing),
+        "net_change": float(net),
+    }
+
+
+@router.get("/vat-return")
+def vat_return(
+    start: _date,
+    end: _date,
+    db: Session = Depends(get_db),
+):
+    """Korean 부가가치세 신고서 — quarterly summary.
+
+    매출세액 (output VAT)  = sum of e-Tax sales invoices' tax  in [start, end]
+    매입세액 (input  VAT)  = sum of e-Tax purchase invoices' tax in [start, end]
+    납부세액 = 매출세액 - 매입세액 (음수면 환급)
+
+    e-Tax invoices in `accepted` or `submitted` status only.
+    """
+    from sqlalchemy import func
+
+    from app.modules.etax.models import ETaxInvoice, ETaxStatus, ETaxType
+
+    sales = (
+        db.query(
+            func.coalesce(func.sum(ETaxInvoice.subtotal), 0).label("supply"),
+            func.coalesce(func.sum(ETaxInvoice.tax), 0).label("vat"),
+            func.count(ETaxInvoice.id).label("count"),
+        )
+        .filter(ETaxInvoice.type == ETaxType.sales)
+        .filter(ETaxInvoice.status.in_([ETaxStatus.accepted, ETaxStatus.submitted]))
+        .filter(ETaxInvoice.issued_date.between(start, end))
+        .first()
+    )
+    purchase = (
+        db.query(
+            func.coalesce(func.sum(ETaxInvoice.subtotal), 0).label("supply"),
+            func.coalesce(func.sum(ETaxInvoice.tax), 0).label("vat"),
+            func.count(ETaxInvoice.id).label("count"),
+        )
+        .filter(ETaxInvoice.type == ETaxType.purchase)
+        .filter(ETaxInvoice.status.in_([ETaxStatus.accepted, ETaxStatus.submitted]))
+        .filter(ETaxInvoice.issued_date.between(start, end))
+        .first()
+    )
+    output_vat = float(sales.vat or 0)
+    input_vat = float(purchase.vat or 0)
+    payable = output_vat - input_vat
+    return {
+        "period": {"start": start.isoformat(), "end": end.isoformat()},
+        "sales": {
+            "supply_amount": float(sales.supply or 0),
+            "vat_amount": output_vat,
+            "invoice_count": int(sales.count or 0),
+        },
+        "purchase": {
+            "supply_amount": float(purchase.supply or 0),
+            "vat_amount": input_vat,
+            "invoice_count": int(purchase.count or 0),
+        },
+        "payable_or_refund": payable,
+        "is_refund": payable < 0,
+    }

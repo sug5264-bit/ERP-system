@@ -14,6 +14,7 @@ export const MODULES: ModuleDef[] = [
   { key: "attendance", labelKey: "nav.attendance", href: "/hr/attendance" },
   { key: "finance", labelKey: "nav.finance", href: "/finance" },
   { key: "periods", labelKey: "nav.periods", href: "/finance/periods", minRole: "manager" },
+  { key: "statements", labelKey: "nav.statements", href: "/finance/statements", minRole: "manager" },
   { key: "inventory", labelKey: "nav.inventory", href: "/inventory" },
   { key: "manufacturing", labelKey: "nav.manufacturing", href: "/manufacturing" },
   { key: "sales", labelKey: "nav.sales", href: "/sales" },
@@ -25,6 +26,7 @@ export const MODULES: ModuleDef[] = [
   { key: "assets", labelKey: "nav.assets", href: "/assets" },
   { key: "projects", labelKey: "nav.projects", href: "/projects" },
   { key: "reorder", labelKey: "nav.reorder", href: "/inventory/reorder" },
+  { key: "wms", labelKey: "nav.wms", href: "/wms" },
   { key: "dashboards", labelKey: "nav.dashboards", href: "/dashboards" },
   { key: "reports", labelKey: "nav.reports", href: "/reports" },
 ];
