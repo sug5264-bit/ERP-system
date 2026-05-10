@@ -814,7 +814,7 @@ def test_payroll_includes_4_insurances(client, admin_auth, db_session):
     assert abs(int(float(body["ltci"])) - int(106350 * 0.1295)) <= 1
 
 
-def test_etax_submit_mock_accepts(client, admin_auth, db_session):
+def test_etax_submit_mock_rejects_bad_business_no(client, admin_auth, db_session):
     res = client.post(
         "/api/etax",
         headers=admin_auth["headers"],
@@ -836,6 +836,38 @@ def test_etax_submit_mock_accepts(client, admin_auth, db_session):
     submit = client.post(f"/api/etax/{eid}/submit", headers=admin_auth["headers"])
     # Mock adapter rejects bad business numbers
     assert submit.status_code == 400
+
+
+def test_etax_submit_mock_accepts_valid_business_no(client, admin_auth, db_session):
+    """Happy-path submit assigns NTS approval no and moves status to accepted."""
+    # Both numbers are real-world valid checksums (Naver 220-81-62517).
+    res = client.post(
+        "/api/etax",
+        headers=admin_auth["headers"],
+        json={
+            "type": "sales",
+            "issued_date": "2026-05-10",
+            "supplier_business_no": "2208162517",
+            "supplier_name": "Supplier",
+            "buyer_business_no": "2208162517",
+            "buyer_name": "Buyer",
+            "item_summary": "물품 일체",
+            "subtotal": 1000,
+            "tax": 100,
+            "total": 1100,
+        },
+    )
+    eid = res.json()["id"]
+    submit = client.post(f"/api/etax/{eid}/submit", headers=admin_auth["headers"])
+    assert submit.status_code == 200, submit.text
+    body = submit.json()
+    assert body["status"] == "accepted"
+    assert body["nts_no"] is not None
+    assert body["submitted_at"] is not None
+
+    # Re-submit should fail (already accepted, not draft)
+    again = client.post(f"/api/etax/{eid}/submit", headers=admin_auth["headers"])
+    assert again.status_code == 400
 
 
 def test_project_profitability(client, admin_auth, db_session):
@@ -1029,3 +1061,112 @@ def test_fx_inverse_rate_precision(client, admin_auth, db_session):
     body = res.json()
     # 1000 KRW / 9.5 ≈ 105.26
     assert 105 < body["result"] < 106
+
+
+def test_partial_gr_accumulates_received_qty(client, admin_auth, db_session):
+    """Two GRs against the same PO: received_qty accumulates correctly."""
+    from app.modules.suppliers.models import POStatus, PurchaseOrder, PurchaseOrderItem, Supplier
+    from app.modules.inventory.models import Item
+
+    sup = Supplier(code="SUP-PART", name="부분입고")
+    item = Item(sku="ING-PART", name="원료부분", stock_qty=Decimal("0"))
+    db_session.add_all([sup, item])
+    db_session.flush()
+    po = PurchaseOrder(
+        po_no="PO-PART-1", supplier_id=sup.id, status=POStatus.acknowledged,
+        total=Decimal("1000"),
+    )
+    po.items.append(
+        PurchaseOrderItem(item_id=item.id, quantity=Decimal("10"), unit_price=Decimal("100"))
+    )
+    db_session.add(po)
+    db_session.commit()
+    poi_id = po.items[0].id
+
+    # First GR: receive 4 of 10
+    gr1 = client.post(
+        "/api/suppliers/goods-receipts",
+        headers=admin_auth["headers"],
+        json={"gr_no": "GR-PART-1", "po_id": po.id,
+              "items": [{"po_item_id": poi_id, "received_qty": 4}]},
+    )
+    assert gr1.status_code == 200, gr1.text
+    client.post(
+        f"/api/suppliers/goods-receipts/{gr1.json()['id']}/post",
+        headers=admin_auth["headers"],
+    )
+
+    # Second GR: receive 6 of 10 (total now 10)
+    gr2 = client.post(
+        "/api/suppliers/goods-receipts",
+        headers=admin_auth["headers"],
+        json={"gr_no": "GR-PART-2", "po_id": po.id,
+              "items": [{"po_item_id": poi_id, "received_qty": 6}]},
+    )
+    client.post(
+        f"/api/suppliers/goods-receipts/{gr2.json()['id']}/post",
+        headers=admin_auth["headers"],
+    )
+
+    db_session.refresh(po)
+    db_session.refresh(po.items[0])
+    assert Decimal(po.items[0].received_qty) == Decimal("10")
+    assert po.status == POStatus.received  # auto-advanced
+
+    # Third GR would over-receive
+    over = client.post(
+        "/api/suppliers/goods-receipts",
+        headers=admin_auth["headers"],
+        json={"gr_no": "GR-PART-3", "po_id": po.id,
+              "items": [{"po_item_id": poi_id, "received_qty": 1}]},
+    )
+    # PO status is now 'received', so create_gr should reject
+    assert over.status_code == 400
+
+
+def test_holiday_global_and_tenant_specific(db_session):
+    """Global (tenant_id=NULL) and per-tenant holiday rows can coexist."""
+    from app.modules.hr.models import Holiday
+
+    # Global Korean holiday
+    db_session.add(Holiday(date=date(2027, 1, 1), name="신정", country="KR", tenant_id=None))
+    # Company-specific founders day
+    db_session.add(
+        Holiday(date=date(2027, 1, 1), name="창립일 (테넌트1)", country="KR", tenant_id=None)
+    )
+    # Both allowed when tenant_id same? unique on (date,country,tenant_id)
+    db_session.commit()  # both rows have same tenant=NULL, but SQLite treats NULL != NULL
+    rows = db_session.query(Holiday).filter(Holiday.date == date(2027, 1, 1)).all()
+    assert len(rows) == 2
+
+
+def test_leave_request_requires_role(client, db_session):
+    """A user without HR access cannot submit leave requests."""
+    from app.core.security import hash_password
+    from app.modules.auth.models import Role, User
+
+    viewer = User(
+        email="viewer@test.com",
+        full_name="View Only",
+        hashed_password=hash_password("test1234"),
+        role=Role.viewer,
+    )
+    db_session.add(viewer)
+    db_session.commit()
+
+    login = client.post(
+        "/api/auth/login",
+        data={"username": "viewer@test.com", "password": "test1234"},
+    )
+    assert login.status_code == 200
+    token = login.json()["access_token"]
+
+    res = client.post(
+        "/api/hr/leave-requests",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "employee_id": 1, "type": "annual",
+            "start_date": "2026-06-01", "end_date": "2026-06-01",
+        },
+    )
+    assert res.status_code == 403

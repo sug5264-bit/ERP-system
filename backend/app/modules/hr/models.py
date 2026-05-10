@@ -90,16 +90,21 @@ class LeaveBalance(BaseEntity):
 class Holiday(BaseEntity):
     """Public/company holidays. Excluded from leave business-day calculations.
 
-    `country` is reserved for future multi-region support — for now defaults
-    to "KR".
+    `tenant_id=NULL` means a global holiday (applies to all tenants).
+    A non-null `tenant_id` row overrides — useful for company-specific
+    days off (e.g. founders' day). `country` is reserved for future
+    multi-region support — for now defaults to "KR".
     """
 
     __tablename__ = "hr_holidays"
-    __table_args__ = (UniqueConstraint("date", "country", name="uq_holiday_date_country"),)
+    __table_args__ = (
+        UniqueConstraint("date", "country", "tenant_id", name="uq_holiday_date_country_tenant"),
+    )
 
     date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     country: Mapped[str] = mapped_column(String(8), default="KR", nullable=False)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), index=True)
 
 
 class Payroll(BaseEntity):

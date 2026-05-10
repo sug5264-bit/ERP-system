@@ -49,7 +49,15 @@ class HometaxAdapter:
 
 
 def _is_business_no(s: str) -> bool:
-    """Validate Korean business registration number with the NTS check digit."""
+    """Validate Korean business registration number with the NTS check digit.
+
+    Algorithm (per NTS 부가가치세법 시행령 별표):
+      1. Strip non-digits; require exactly 10.
+      2. Multiply digits[0..8] by weights [1,3,7,1,3,7,1,3,5] and sum.
+      3. Add (digits[8] * 5) // 10 — accounts for the 9th-digit overflow
+         when its weighted value reaches 10+.
+      4. Check digit = (10 - sum % 10) % 10 must equal digits[9].
+    """
     digits = [c for c in (s or "") if c.isdigit()]
     if len(digits) != 10:
         return False
