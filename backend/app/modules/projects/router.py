@@ -135,10 +135,15 @@ def close_project(project_id: int, db: Session = Depends(get_db)):
 
 @router.post("/timesheets", response_model=TimesheetOut)
 def add_timesheet(payload: TimesheetIn, db: Session = Depends(get_db)):
-    if payload.minutes <= 0:
-        raise HTTPException(status_code=400, detail="minutes must be > 0")
-    if not db.query(Project).filter(Project.id == payload.project_id).first():
+    if payload.minutes <= 0 or payload.minutes > 1440:
+        raise HTTPException(status_code=400, detail="minutes must be 1-1440")
+    proj = db.query(Project).filter(Project.id == payload.project_id).first()
+    if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
+    if proj.status != ProjectStatus.active:
+        raise HTTPException(
+            status_code=400, detail=f"Project is {proj.status.value}; cannot add timesheet"
+        )
     t = Timesheet(**payload.model_dump())
     db.add(t)
     db.commit()
@@ -160,6 +165,13 @@ def list_timesheets(project_id: int, db: Session = Depends(get_db)):
 def add_expense(payload: ExpenseIn, db: Session = Depends(get_db)):
     if payload.amount <= 0:
         raise HTTPException(status_code=400, detail="amount must be > 0")
+    proj = db.query(Project).filter(Project.id == payload.project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if proj.status != ProjectStatus.active:
+        raise HTTPException(
+            status_code=400, detail=f"Project is {proj.status.value}; cannot add expense"
+        )
     e = ProjectExpense(**payload.model_dump())
     db.add(e)
     db.commit()
@@ -181,6 +193,13 @@ def list_expenses(project_id: int, db: Session = Depends(get_db)):
 def add_revenue(payload: RevenueIn, db: Session = Depends(get_db)):
     if payload.amount <= 0:
         raise HTTPException(status_code=400, detail="amount must be > 0")
+    proj = db.query(Project).filter(Project.id == payload.project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if proj.status != ProjectStatus.active:
+        raise HTTPException(
+            status_code=400, detail=f"Project is {proj.status.value}; cannot add revenue"
+        )
     r = ProjectRevenue(**payload.model_dump())
     db.add(r)
     db.commit()
@@ -210,19 +229,19 @@ def profitability(project_id: int, db: Session = Depends(get_db)):
         .scalar()
         or 0
     )
-    # Labor cost = sum(minutes/60 * hourly_rate)
-    labor_total = (
-        db.query(
-            func.coalesce(
-                func.sum(Timesheet.minutes * Timesheet.hourly_rate / 60), 0
-            )
-        )
+    # Labor cost computed in Python to keep Decimal precision regardless of
+    # SQL driver (SQLite returns float, Postgres Numeric).
+    timesheets = (
+        db.query(Timesheet.minutes, Timesheet.hourly_rate)
         .filter(Timesheet.project_id == project_id)
-        .scalar()
-        or 0
+        .all()
     )
-    revenue_d = Decimal(revenue)
-    cost_d = Decimal(expense_total) + Decimal(labor_total)
+    labor_total = sum(
+        (Decimal(m) * Decimal(r) / Decimal(60) for m, r in timesheets),
+        Decimal("0"),
+    )
+    revenue_d = Decimal(str(revenue))
+    cost_d = Decimal(str(expense_total)) + labor_total
     margin = revenue_d - cost_d
     margin_pct = float(margin / revenue_d * 100) if revenue_d > 0 else 0.0
     return {
@@ -230,8 +249,8 @@ def profitability(project_id: int, db: Session = Depends(get_db)):
         "project_code": p.code,
         "budget": float(p.budget),
         "revenue": float(revenue_d),
-        "labor_cost": float(Decimal(labor_total)),
-        "expense_cost": float(Decimal(expense_total)),
+        "labor_cost": float(labor_total),
+        "expense_cost": float(Decimal(str(expense_total))),
         "total_cost": float(cost_d),
         "margin": float(margin),
         "margin_pct": round(margin_pct, 2),

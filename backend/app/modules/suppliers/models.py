@@ -43,7 +43,7 @@ class PurchaseOrder(BaseEntity):
     status: Mapped[POStatus] = mapped_column(
         Enum(POStatus), default=POStatus.draft, nullable=False, index=True
     )
-    total: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    total: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     notes: Mapped[str | None] = mapped_column(String(1000))
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
 

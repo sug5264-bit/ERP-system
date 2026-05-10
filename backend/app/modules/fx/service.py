@@ -43,7 +43,12 @@ def get_rate(
         .first()
     )
     if rev is not None and Decimal(rev.rate) != 0:
-        return (Decimal("1") / Decimal(rev.rate)).quantize(Decimal("0.000001"))
+        # Use higher precision (10 dp) so very small inverse rates don't
+        # round to zero. Final amount conversions still quantize to 0.01.
+        from decimal import getcontext
+
+        getcontext().prec = max(getcontext().prec, 28)
+        return (Decimal("1") / Decimal(rev.rate)).quantize(Decimal("0.0000000001"))
     return None
 
 

@@ -119,9 +119,17 @@ def create_category(payload: AssetCategoryIn, db: Session = Depends(get_db)):
 
 
 @router.get("/assets", response_model=Page[AssetOut])
-def list_assets(params: PageParams = Depends(), db: Session = Depends(get_db)):
-    page = paginate(db.query(Asset).order_by(Asset.asset_no), params)
-    page.items = [_to_out(a) for a in page.items]
+def list_assets(
+    status: AssetStatus | None = AssetStatus.active,
+    params: PageParams = Depends(),
+    db: Session = Depends(get_db),
+):
+    """List assets. Defaults to active-only; pass `status=` empty for all."""
+    q = db.query(Asset).order_by(Asset.asset_no)
+    if status is not None:
+        q = q.filter(Asset.status == status)
+    page = paginate(q, params)
+    page["items"] = [_to_out(a) for a in page["items"]]
     return page
 
 
@@ -226,34 +234,30 @@ def run_depreciation(period_code: str, db: Session = Depends(get_db)):
         if amount <= 0:
             skipped += 1
             continue
-        # Auto-post: Dr 감가상각비(5200) / Cr 감가상각누계액(1390)
+        # Auto-post: Dr 감가상각비(5200) / Cr 감가상각누계액(1390).
+        # If both accounts exist we MUST post; failure aborts this asset's
+        # depreciation so accumulated_depreciation stays in sync with the GL.
+        # If either account is missing the post is a no-op (je_id=None).
+        from app.modules.finance.models import Account, JournalEntry, JournalLine
+
+        dep_exp = db.query(Account).filter(Account.code == "5200").first()
+        accum_acc = db.query(Account).filter(Account.code == "1390").first()
         je_id: int | None = None
-        try:
-            from app.modules.finance.models import Account, JournalEntry, JournalLine
-
-            dep_exp = db.query(Account).filter(Account.code == "5200").first()
-            accum_acc = db.query(Account).filter(Account.code == "1390").first()
-            if dep_exp and accum_acc:
-                je = JournalEntry(
-                    entry_date=date(year, month, 1),
-                    description=f"Depreciation {asset.asset_no} {period_code}",
-                    reference=f"DEP-{asset.asset_no}-{period_code}",
-                )
-                je.lines.append(
-                    JournalLine(account_id=dep_exp.id, debit=amount, credit=Decimal("0"))
-                )
-                je.lines.append(
-                    JournalLine(account_id=accum_acc.id, debit=Decimal("0"), credit=amount)
-                )
-                db.add(je)
-                db.flush()
-                je_id = je.id
-        except Exception:
-            import logging
-
-            logging.getLogger("erp.assets").exception(
-                "auto-post failed for %s %s", asset.asset_no, period_code
+        if dep_exp and accum_acc:
+            je = JournalEntry(
+                entry_date=date(year, month, 1),
+                description=f"Depreciation {asset.asset_no} {period_code}",
+                reference=f"DEP-{asset.asset_no}-{period_code}",
             )
+            je.lines.append(
+                JournalLine(account_id=dep_exp.id, debit=amount, credit=Decimal("0"))
+            )
+            je.lines.append(
+                JournalLine(account_id=accum_acc.id, debit=Decimal("0"), credit=amount)
+            )
+            db.add(je)
+            db.flush()
+            je_id = je.id
 
         entry = DepreciationEntry(
             asset_id=asset.id,

@@ -484,10 +484,10 @@ def create_gr(payload: GRIn, db: Session = Depends(get_db)):
     )
     if not po:
         raise HTTPException(status_code=404, detail="PO not found")
-    if po.status not in (_POStatus.acknowledged, _POStatus.shipped):
+    if po.status not in (_POStatus.sent, _POStatus.acknowledged, _POStatus.shipped):
         raise HTTPException(
             status_code=400,
-            detail=f"PO must be acknowledged or shipped (got {po.status.value})",
+            detail=f"PO must be sent / acknowledged / shipped (got {po.status.value})",
         )
 
     # Pre-flight: check no line over-receives

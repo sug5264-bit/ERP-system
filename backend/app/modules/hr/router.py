@@ -223,7 +223,11 @@ def list_leave_requests(
     return q.order_by(LeaveRequest.start_date.desc()).all()
 
 
-@router.post("/leave-requests", response_model=LeaveRequestOut)
+@router.post(
+    "/leave-requests",
+    response_model=LeaveRequestOut,
+    dependencies=[Depends(require_module_role("hr", "staff"))],
+)
 def submit_leave_request(payload: LeaveRequestIn, db: Session = Depends(get_db)):
     if payload.end_date < payload.start_date:
         raise HTTPException(status_code=400, detail="end_date < start_date")
@@ -693,8 +697,11 @@ def clock_out(payload: AttendanceClockOut, db: Session = Depends(get_db)):
     row.clock_out = now_t
     in_min = _hms_to_min(row.clock_in)
     out_min = _hms_to_min(now_t)
-    if in_min is None or out_min is None or out_min < in_min:
+    if in_min is None or out_min is None:
         raise HTTPException(status_code=400, detail="Invalid time range")
+    # Cross-midnight shift: out_time earlier than in_time means next day.
+    if out_min < in_min:
+        out_min += 24 * 60
     worked = out_min - in_min
     # Subtract a 60-minute lunch break for shifts > 6h
     if worked > 360:

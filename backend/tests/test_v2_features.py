@@ -911,3 +911,121 @@ def test_fx_realized_diff(client, admin_auth, db_session):
     )
     assert res.status_code == 200
     assert res.json()["realized_gain_loss"] == 10_000.0
+
+
+# --- Phase 5: bug fixes regression ----------------------------------------
+
+
+def test_attendance_overnight_shift(client, admin_auth, db_session):
+    """Overnight shift (cross-midnight) is calculated correctly."""
+    from app.modules.hr.models import Employee
+
+    emp = Employee(employee_no="NIGHT-1", full_name="야간조", email="n@x.com",
+                   salary=Decimal("3000000"))
+    db_session.add(emp)
+    db_session.commit()
+
+    client.post(
+        "/api/hr/attendance/clock-in",
+        headers=admin_auth["headers"],
+        json={"employee_id": emp.id, "date": "2026-05-06", "time": "23:00:00"},
+    )
+    res = client.post(
+        "/api/hr/attendance/clock-out",
+        headers=admin_auth["headers"],
+        json={"employee_id": emp.id, "date": "2026-05-06", "time": "02:00:00"},
+    )
+    assert res.status_code == 200, res.text
+    # 23:00 → 02:00 = 3 hours; no lunch deduction (< 6h)
+    assert res.json()["worked_minutes"] == 180
+
+
+def test_closed_project_blocks_new_entries(client, admin_auth, db_session):
+    """Closed project rejects timesheets / expenses / revenues."""
+    from app.modules.projects.models import Project, ProjectStatus
+
+    proj = Project(code="P-CLOSED", name="마감 프로젝트", budget=Decimal("0"),
+                   status=ProjectStatus.closed)
+    db_session.add(proj)
+    db_session.commit()
+
+    res = client.post(
+        "/api/projects/timesheets",
+        headers=admin_auth["headers"],
+        json={
+            "project_id": proj.id,
+            "employee_id": 1,
+            "date": "2026-05-10",
+            "minutes": 60,
+            "hourly_rate": 10000,
+        },
+    )
+    assert res.status_code == 400
+    assert "closed" in res.json()["error"]["message"].lower()
+
+
+def test_timesheet_max_minutes_validation(client, admin_auth, db_session):
+    from app.modules.projects.models import Project
+
+    proj = Project(code="P-MAX", name="범위 검증", budget=Decimal("0"))
+    db_session.add(proj)
+    db_session.commit()
+
+    res = client.post(
+        "/api/projects/timesheets",
+        headers=admin_auth["headers"],
+        json={
+            "project_id": proj.id,
+            "employee_id": 1,
+            "date": "2026-05-10",
+            "minutes": 9999,  # >24h
+            "hourly_rate": 10000,
+        },
+    )
+    assert res.status_code == 400
+
+
+def test_disposed_assets_filtered_by_default(client, admin_auth, db_session):
+    """list_assets defaults to active-only."""
+    res = client.post(
+        "/api/assets/assets",
+        headers=admin_auth["headers"],
+        json={
+            "asset_no": "DISP-1",
+            "name": "처분 예정",
+            "acquired_date": "2026-01-01",
+            "acquired_cost": 100,
+            "useful_life_months": 12,
+        },
+    )
+    assert res.status_code == 200
+    aid = res.json()["id"]
+    client.post(f"/api/assets/assets/{aid}/dispose", headers=admin_auth["headers"])
+
+    # default list — should NOT include disposed
+    listed = client.get("/api/assets/assets?page=1&size=100",
+                         headers=admin_auth["headers"]).json()
+    assert all(item["status"] == "active" for item in listed["items"])
+
+    # explicit disposed filter — should include
+    listed_disp = client.get("/api/assets/assets?status=disposed&page=1&size=100",
+                              headers=admin_auth["headers"]).json()
+    assert any(item["id"] == aid for item in listed_disp["items"])
+
+
+def test_fx_inverse_rate_precision(client, admin_auth, db_session):
+    """Reverse lookup of small rate doesn't truncate to zero."""
+    client.post(
+        "/api/fx/rates",
+        headers=admin_auth["headers"],
+        json={"date": "2026-05-01", "from_ccy": "JPY", "to_ccy": "KRW", "rate": 9.5},
+    )
+    # Reverse: KRW → JPY ≈ 0.10526...
+    res = client.get(
+        "/api/fx/convert?amount=1000&from_ccy=KRW&to_ccy=JPY&as_of=2026-05-10",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200
+    body = res.json()
+    # 1000 KRW / 9.5 ≈ 105.26
+    assert 105 < body["result"] < 106
