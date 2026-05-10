@@ -2,7 +2,9 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
+import EditDeleteActions from "@/components/EditDeleteActions";
 import { api } from "@/lib/api";
+import { hasRole, useMe } from "@/lib/auth";
 
 type Account = { id: number; code: string; name: string; type: string };
 type Line = { id: number; account_id: number; debit: string; credit: string; memo: string | null };
@@ -19,6 +21,7 @@ type LineDraft = { account_id: string; debit: string; credit: string; memo: stri
 const emptyLine: LineDraft = { account_id: "", debit: "0", credit: "0", memo: "" };
 
 export default function FinancePage() {
+  const me = useMe();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [error, setError] = useState("");
@@ -208,12 +211,34 @@ export default function FinancePage() {
             { key: "code", header: "코드" },
             { key: "name", header: "계정명" },
             { key: "type", header: "유형" },
+            {
+              key: "_edit",
+              header: "관리",
+              sortable: false,
+              render: (r) => (
+                <EditDeleteActions
+                  row={r}
+                  fields={[
+                    { key: "name", label: "계정명" },
+                    { key: "type", label: "유형 (asset/liability/equity/revenue/expense)" },
+                  ]}
+                  patchPath={(x) => `/api/finance/accounts/${x.id}`}
+                  deletePath={(x) => `/api/finance/accounts/${x.id}`}
+                  onChange={load}
+                  confirmText="계정과목을 삭제하시겠습니까? (전표 라인이 있으면 거부)"
+                />
+              ),
+            },
           ]}
           rows={accounts}
         />
       </div>
 
       <h2 className="text-lg font-medium mb-2">분개 전표 ({entries.length})</h2>
+      <p className="text-xs text-slate-500 mb-2">
+        전표는 회계 원칙상 직접 수정·삭제하지 않습니다. admin은 "취소(void)" 버튼으로
+        역분개 전표를 자동 생성할 수 있습니다.
+      </p>
       <DataTable<JournalEntry>
         columns={[
           { key: "entry_date", header: "일자" },
@@ -224,6 +249,31 @@ export default function FinancePage() {
             header: "차변 합계",
             render: (r) =>
               r.lines.reduce((s, l) => s + Number(l.debit), 0).toLocaleString(),
+          },
+          {
+            key: "_void",
+            header: "관리",
+            sortable: false,
+            render: (r) =>
+              hasRole(me, "admin") &&
+              !(r.reference || "").startsWith("VOID-") ? (
+                <button
+                  onClick={async () => {
+                    if (!confirm(`전표 #${r.id}에 대한 역분개를 생성합니다.`)) return;
+                    try {
+                      await api(`/api/finance/journal-entries/${r.id}/void`, {
+                        method: "POST",
+                      });
+                      await load();
+                    } catch (e: any) {
+                      alert(`실패: ${e?.message ?? e}`);
+                    }
+                  }}
+                  className="text-amber-700 text-xs hover:underline"
+                >
+                  취소(void)
+                </button>
+              ) : null,
           },
         ]}
         rows={entries}

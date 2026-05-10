@@ -17,10 +17,24 @@ class CustomerCreate(CustomerBase):
     pass
 
 
+class CustomerUpdate(BaseModel):
+    name: str | None = None
+    email: EmailStr | None = None
+    phone: str | None = None
+    company: str | None = None
+
+
 class CustomerOut(CustomerBase):
     id: int
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SalesOrderUpdate(BaseModel):
+    """Editable header fields for an order — line items are immutable.
+    Only allowed while the order is still in `draft` status."""
+    customer_id: int | None = None
+    order_date: date | None = None
 
 
 class SalesOrderItemIn(BaseModel):

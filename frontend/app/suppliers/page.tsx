@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
+import EditDeleteActions from "@/components/EditDeleteActions";
 import Pager from "@/components/Pager";
 import { Page, api } from "@/lib/api";
 
@@ -311,6 +312,26 @@ export default function SuppliersPage() {
                   ) : (
                     <span className="text-slate-400 text-xs">비활성</span>
                   ),
+              },
+              {
+                key: "_edit",
+                header: "관리",
+                sortable: false,
+                render: (r) => (
+                  <EditDeleteActions
+                    row={r}
+                    fields={[
+                      { key: "name", label: "공급사명" },
+                      { key: "contact_email", label: "이메일", type: "email" },
+                      { key: "phone", label: "전화" },
+                      { key: "business_no", label: "사업자번호" },
+                    ]}
+                    patchPath={(x) => `/api/suppliers/${x.id}`}
+                    deletePath={(x) => `/api/suppliers/${x.id}`}
+                    onChange={load}
+                    confirmText="공급사를 삭제하시겠습니까? (PO가 있으면 거부됨)"
+                  />
+                ),
               },
             ]}
             rows={suppliers}

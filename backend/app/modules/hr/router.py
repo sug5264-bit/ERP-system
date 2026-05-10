@@ -94,3 +94,47 @@ def delete_employee(employee_id: int, db: Session = Depends(get_db)):
     if not service.delete_employee(db, employee_id):
         raise HTTPException(status_code=404, detail="Employee not found")
     return {"ok": True}
+
+
+# ---- Admin-only department edit / delete -----------------------------------
+
+
+from app.core.auth import require_role  # noqa: E402
+from app.modules.hr.models import Department  # noqa: E402
+from app.modules.hr.schemas import DepartmentUpdate  # noqa: E402
+
+
+@router.patch(
+    "/departments/{department_id}",
+    response_model=DepartmentOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def update_department(
+    department_id: int, payload: DepartmentUpdate, db: Session = Depends(get_db)
+):
+    dept = db.query(Department).filter(Department.id == department_id).first()
+    if not dept:
+        raise HTTPException(status_code=404, detail="Department not found")
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        setattr(dept, k, v)
+    db.commit()
+    db.refresh(dept)
+    return dept
+
+
+@router.delete(
+    "/departments/{department_id}",
+    dependencies=[Depends(require_role("admin"))],
+)
+def delete_department(department_id: int, db: Session = Depends(get_db)):
+    dept = db.query(Department).filter(Department.id == department_id).first()
+    if not dept:
+        raise HTTPException(status_code=404, detail="Department not found")
+    if dept.employees:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete department with assigned employees",
+        )
+    db.delete(dept)
+    db.commit()
+    return {"ok": True}

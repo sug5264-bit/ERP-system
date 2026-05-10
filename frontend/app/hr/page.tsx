@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import Attachments from "@/components/Attachments";
 import DataTable from "@/components/DataTable";
+import EditDeleteActions from "@/components/EditDeleteActions";
 import ExportMenu from "@/components/ExportMenu";
 import Pager from "@/components/Pager";
 import { Page, api } from "@/lib/api";
@@ -134,6 +135,25 @@ export default function HRPage() {
               >
                 파일
               </button>
+            ),
+          },
+          {
+            key: "_edit",
+            header: "관리",
+            sortable: false,
+            render: (r) => (
+              <EditDeleteActions
+                row={r}
+                fields={[
+                  { key: "full_name", label: "이름" },
+                  { key: "position", label: "직책" },
+                  { key: "salary", label: "급여", type: "number" },
+                  { key: "department_id", label: "부서 ID", type: "number" },
+                ]}
+                patchPath={(x) => `/api/hr/employees/${x.id}`}
+                deletePath={(x) => `/api/hr/employees/${x.id}`}
+                onChange={load}
+              />
             ),
           },
         ]}

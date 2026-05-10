@@ -15,6 +15,14 @@ class SupplierIn(BaseModel):
     portal_user_id: int | None = None
 
 
+class SupplierUpdate(BaseModel):
+    name: str | None = None
+    contact_email: EmailStr | None = None
+    phone: str | None = None
+    business_no: str | None = None
+    is_active: bool | None = None
+
+
 class CreateSupplierWithPortalUser(BaseModel):
     """Create a Supplier together with a fresh portal-user account."""
     code: str

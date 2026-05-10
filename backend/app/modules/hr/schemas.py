@@ -13,6 +13,11 @@ class DepartmentCreate(DepartmentBase):
     pass
 
 
+class DepartmentUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
 class DepartmentOut(DepartmentBase):
     id: int
 

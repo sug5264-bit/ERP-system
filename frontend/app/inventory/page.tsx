@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
+import EditDeleteActions from "@/components/EditDeleteActions";
 import ExportMenu from "@/components/ExportMenu";
 import Pager from "@/components/Pager";
 import { Page, api } from "@/lib/api";
@@ -192,6 +193,25 @@ export default function InventoryPage() {
                   LOT
                 </button>
               </div>
+            ),
+          },
+          {
+            key: "_edit",
+            header: "관리",
+            sortable: false,
+            render: (r) => (
+              <EditDeleteActions
+                row={r}
+                fields={[
+                  { key: "name", label: "품목명" },
+                  { key: "unit", label: "단위" },
+                  { key: "unit_price", label: "단가", type: "number" },
+                ]}
+                patchPath={(x) => `/api/inventory/items/${x.id}`}
+                deletePath={(x) => `/api/inventory/items/${x.id}`}
+                onChange={load}
+                confirmText="이 품목을 삭제하시겠습니까? (재고가 0이고 이력이 없어야 함)"
+              />
             ),
           },
         ]}

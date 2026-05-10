@@ -16,6 +16,11 @@ class AccountCreate(AccountBase):
     pass
 
 
+class AccountUpdate(BaseModel):
+    name: str | None = None
+    type: AccountType | None = None
+
+
 class AccountOut(AccountBase):
     id: int
 

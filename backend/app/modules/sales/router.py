@@ -129,3 +129,89 @@ def confirm_order(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return order
+
+
+# ---- Admin-only edit / delete ---------------------------------------------
+
+
+from app.core.auth import require_role  # noqa: E402
+from app.modules.sales.schemas import CustomerUpdate, SalesOrderUpdate  # noqa: E402
+
+
+@router.patch(
+    "/customers/{customer_id}",
+    response_model=CustomerOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def update_customer(
+    customer_id: int, payload: CustomerUpdate, db: Session = Depends(get_db)
+):
+    cust = db.query(Customer).filter(Customer.id == customer_id).first()
+    if not cust:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        setattr(cust, k, v)
+    db.commit()
+    db.refresh(cust)
+    return cust
+
+
+@router.delete(
+    "/customers/{customer_id}",
+    dependencies=[Depends(require_role("admin"))],
+)
+def delete_customer(customer_id: int, db: Session = Depends(get_db)):
+    cust = db.query(Customer).filter(Customer.id == customer_id).first()
+    if not cust:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if db.query(SalesOrder).filter(SalesOrder.customer_id == customer_id).first():
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete customer with existing orders",
+        )
+    db.delete(cust)
+    db.commit()
+    return {"ok": True}
+
+
+@router.patch(
+    "/orders/{order_id}",
+    response_model=SalesOrderOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def update_order(
+    order_id: int, payload: SalesOrderUpdate, db: Session = Depends(get_db)
+):
+    order = service.get_order(db, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    status_v = order.status.value if hasattr(order.status, "value") else str(order.status)
+    if status_v != "draft":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot edit order in {status_v} state — must be draft",
+        )
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        setattr(order, k, v)
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+@router.delete(
+    "/orders/{order_id}",
+    dependencies=[Depends(require_role("admin"))],
+)
+def delete_order(order_id: int, db: Session = Depends(get_db)):
+    order = service.get_order(db, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    status_v = order.status.value if hasattr(order.status, "value") else str(order.status)
+    if status_v != "draft":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete order in {status_v} state — only draft orders are removable",
+        )
+    db.delete(order)
+    db.commit()
+    return {"ok": True}

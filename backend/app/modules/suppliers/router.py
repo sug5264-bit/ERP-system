@@ -335,3 +335,45 @@ def cancel_order(order_id: int, db: Session = Depends(get_db), user: User = Depe
         [POStatus.draft, POStatus.sent, POStatus.acknowledged],
         POStatus.cancelled,
     )
+
+
+# ---- Admin-only edit / delete ---------------------------------------------
+
+
+from app.modules.suppliers.schemas import SupplierUpdate  # noqa: E402
+
+
+@router.patch(
+    "/{supplier_id}",
+    response_model=SupplierOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def update_supplier(
+    supplier_id: int, payload: SupplierUpdate, db: Session = Depends(get_db)
+):
+    sup = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+    if not sup:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        setattr(sup, k, v)
+    db.commit()
+    db.refresh(sup)
+    return sup
+
+
+@router.delete(
+    "/{supplier_id}",
+    dependencies=[Depends(require_role("admin"))],
+)
+def delete_supplier(supplier_id: int, db: Session = Depends(get_db)):
+    sup = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+    if not sup:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    if db.query(PurchaseOrder).filter(PurchaseOrder.supplier_id == supplier_id).first():
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete supplier with existing POs (cancel them first)",
+        )
+    db.delete(sup)
+    db.commit()
+    return {"ok": True}

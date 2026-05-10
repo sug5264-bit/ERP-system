@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
+import EditDeleteActions from "@/components/EditDeleteActions";
 import ExportMenu from "@/components/ExportMenu";
 import Pager from "@/components/Pager";
 import { Page, api } from "@/lib/api";
@@ -286,6 +287,26 @@ export default function SalesPage() {
             { key: "name", header: "이름" },
             { key: "email", header: "이메일" },
             { key: "company", header: "회사" },
+            {
+              key: "_edit",
+              header: "관리",
+              sortable: false,
+              render: (r) => (
+                <EditDeleteActions
+                  row={r}
+                  fields={[
+                    { key: "name", label: "이름" },
+                    { key: "email", label: "이메일", type: "email" },
+                    { key: "phone", label: "전화" },
+                    { key: "company", label: "회사" },
+                  ]}
+                  patchPath={(x) => `/api/sales/customers/${x.id}`}
+                  deletePath={(x) => `/api/sales/customers/${x.id}`}
+                  onChange={load}
+                  confirmText="고객을 삭제하시겠습니까? (주문이 있으면 거부됨)"
+                />
+              ),
+            },
           ]}
           rows={customers}
         />
@@ -311,6 +332,7 @@ export default function SalesPage() {
           {
             key: "action",
             header: "",
+            sortable: false,
             render: (r) =>
               r.status === "draft" ? (
                 <button
@@ -320,6 +342,27 @@ export default function SalesPage() {
                   확정 (재고차감)
                 </button>
               ) : null,
+          },
+          {
+            key: "_edit",
+            header: "관리",
+            sortable: false,
+            render: (r) =>
+              r.status === "draft" ? (
+                <EditDeleteActions
+                  row={r}
+                  fields={[
+                    { key: "customer_id", label: "고객 ID", type: "number" },
+                    { key: "order_date", label: "주문일자" },
+                  ]}
+                  patchPath={(x) => `/api/sales/orders/${x.id}`}
+                  deletePath={(x) => `/api/sales/orders/${x.id}`}
+                  onChange={load}
+                  confirmText="이 주문을 삭제하시겠습니까? (draft 상태만 가능)"
+                />
+              ) : (
+                <span className="text-xs text-slate-400">{r.status}</span>
+              ),
           },
         ]}
         rows={orders}

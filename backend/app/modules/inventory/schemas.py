@@ -32,6 +32,19 @@ class ItemCreate(ItemBase):
     pass
 
 
+class ItemUpdate(BaseModel):
+    name: str | None = None
+    unit: str | None = None
+    unit_price: Decimal | None = None
+
+
+class StockLotUpdate(BaseModel):
+    lot_number: str | None = None
+    expiry_date: date | None = None
+    supplier: str | None = None
+    serial_number: str | None = None
+
+
 class ItemOut(ItemBase):
     id: int
     stock_qty: Decimal
