@@ -520,3 +520,54 @@ def auto_purchase_orders(db: Session = Depends(get_db)):
 
     db.commit()
     return {"created": created, "unassigned": unassigned}
+
+
+@router.get("/scan/{barcode}")
+def scan_barcode(barcode: str, db: Session = Depends(get_db)):
+    """Lookup an item by barcode. Returns 404 when not registered.
+
+    The mobile app/scanner POSTs to /api/inventory/movements after lookup.
+    """
+    item = db.query(Item).filter(Item.barcode == barcode).first()
+    if not item:
+        raise HTTPException(status_code=404, detail=f"No item with barcode {barcode}")
+    return {
+        "id": item.id,
+        "sku": item.sku,
+        "name": item.name,
+        "barcode": item.barcode,
+        "stock_qty": float(item.stock_qty),
+        "unit_price": float(item.unit_price),
+    }
+
+
+@router.post(
+    "/scan-movement",
+    dependencies=[Depends(require_module_role("inventory", "staff"))],
+)
+def scan_movement(
+    barcode: str,
+    movement_type: str,
+    quantity: float,
+    note: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """One-shot scanner endpoint: barcode + qty → inbound/outbound movement."""
+    item = db.query(Item).filter(Item.barcode == barcode).first()
+    if not item:
+        raise HTTPException(status_code=404, detail=f"No item with barcode {barcode}")
+    if movement_type not in ("inbound", "outbound", "adjustment"):
+        raise HTTPException(status_code=400, detail="movement_type invalid")
+    try:
+        m = service.create_movement(
+            db,
+            StockMovementCreate(
+                item_id=item.id,
+                type=MovementType(movement_type),
+                quantity=Decimal(str(quantity)),
+                note=note or f"Scan: {barcode}",
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"movement_id": m.id, "item_id": item.id, "new_stock": float(item.stock_qty)}

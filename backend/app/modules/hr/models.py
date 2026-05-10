@@ -153,3 +153,51 @@ class Attendance(BaseEntity):
     worked_minutes: Mapped[int] = mapped_column(Integer, default=0)
     overtime_minutes: Mapped[int] = mapped_column(Integer, default=0)
     note: Mapped[str | None] = mapped_column(String(500))
+
+
+class YearEndSettlement(BaseEntity):
+    """Korean year-end tax settlement (연말정산) — annual reconciliation of
+    income tax withheld vs actually owed after deductions/credits."""
+
+    __tablename__ = "hr_year_end_settlement"
+    __table_args__ = (
+        UniqueConstraint("employee_id", "tax_year", name="uq_yes_emp_year"),
+    )
+
+    employee_id: Mapped[int] = mapped_column(
+        ForeignKey("hr_employees.id"), nullable=False, index=True
+    )
+    tax_year: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    gross_annual: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    deductions: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), default=Decimal("0")
+    )  # 인적공제 + 보험료 + 의료비 등 합산
+    credits: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), default=Decimal("0")
+    )  # 세액공제 (자녀, 기부금 등)
+    tax_withheld: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), default=Decimal("0")
+    )  # 연중 원천징수 합계
+    tax_owed: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), default=Decimal("0")
+    )
+    refund_or_due: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), default=Decimal("0")
+    )  # 양수=환급, 음수=추가납부
+    notes: Mapped[str | None] = mapped_column(String(1000))
+
+
+class PerformanceReview(BaseEntity):
+    """Annual / quarterly performance review with rating + KPI scores."""
+
+    __tablename__ = "hr_performance_reviews"
+
+    employee_id: Mapped[int] = mapped_column(
+        ForeignKey("hr_employees.id"), nullable=False, index=True
+    )
+    period_code: Mapped[str] = mapped_column(String(10), nullable=False, index=True)  # "2026-Q1" or "2026"
+    reviewer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    overall_rating: Mapped[int | None] = mapped_column(Integer)  # 1-5
+    kpi_scores: Mapped[str | None] = mapped_column(String(4000))  # JSON list[{kpi, target, actual, score}]
+    comments: Mapped[str | None] = mapped_column(String(4000))
+    finalized_at: Mapped[date | None] = mapped_column(Date)

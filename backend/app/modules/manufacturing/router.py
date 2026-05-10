@@ -256,3 +256,202 @@ def complete_work_order(wo_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(wo)
     return wo
+
+
+# ---- MRP: forecast → MPS → material requirements --------------------------
+
+
+from app.modules.manufacturing.models import (  # noqa: E402
+    DemandForecast,
+    MasterProductionSchedule,
+    MaterialRequirement,
+)
+
+
+class ForecastIn(BaseModel):
+    item_id: int
+    period_code: str
+    forecast_qty: Decimal
+    notes: str | None = None
+
+
+class ForecastOut(ForecastIn):
+    id: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+@router.get("/forecasts", response_model=list[ForecastOut])
+def list_forecasts(
+    period_code: str | None = None,
+    item_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    q = db.query(DemandForecast).order_by(
+        DemandForecast.period_code, DemandForecast.item_id
+    )
+    if period_code:
+        q = q.filter(DemandForecast.period_code == period_code)
+    if item_id is not None:
+        q = q.filter(DemandForecast.item_id == item_id)
+    return q.all()
+
+
+@router.post(
+    "/forecasts",
+    response_model=ForecastOut,
+    dependencies=[Depends(require_module_role("inventory", "manager"))],
+)
+def upsert_forecast(payload: ForecastIn, db: Session = Depends(get_db)):
+    if payload.forecast_qty < 0:
+        raise HTTPException(status_code=400, detail="forecast_qty must be >= 0")
+    f = (
+        db.query(DemandForecast)
+        .filter(
+            DemandForecast.item_id == payload.item_id,
+            DemandForecast.period_code == payload.period_code,
+        )
+        .with_for_update()
+        .first()
+    )
+    if f:
+        f.forecast_qty = payload.forecast_qty
+        f.notes = payload.notes
+    else:
+        f = DemandForecast(**payload.model_dump())
+        db.add(f)
+    db.commit()
+    db.refresh(f)
+    return f
+
+
+@router.post(
+    "/mrp-run",
+    dependencies=[Depends(require_module_role("inventory", "manager"))],
+)
+def mrp_run(period_code: str, db: Session = Depends(get_db)):
+    """Run MRP for `period_code`:
+      1. For each forecast in this period, compute MPS = max(0, forecast - on_hand + safety_stock).
+      2. Explode MPS through active BOM to get gross component requirements.
+      3. Net out current inventory of each component.
+      4. Persist MasterProductionSchedule + MaterialRequirement rows (idempotent).
+
+    Returns a summary; previous MPS/MR rows for this period are replaced.
+    """
+    from app.modules.inventory.models import Item, ItemPolicy
+
+    # Wipe previous run for this period (idempotent)
+    db.query(MasterProductionSchedule).filter(
+        MasterProductionSchedule.period_code == period_code
+    ).delete()
+    db.query(MaterialRequirement).filter(
+        MaterialRequirement.period_code == period_code
+    ).delete()
+    db.flush()
+
+    forecasts = (
+        db.query(DemandForecast)
+        .filter(DemandForecast.period_code == period_code)
+        .all()
+    )
+    if not forecasts:
+        return {"period_code": period_code, "mps_count": 0, "mr_count": 0,
+                "note": "no forecasts for this period"}
+
+    mps_rows: list[MasterProductionSchedule] = []
+    component_demand: dict[int, Decimal] = {}
+
+    for f in forecasts:
+        item = db.query(Item).filter(Item.id == f.item_id).first()
+        if not item:
+            continue
+        on_hand = Decimal(item.stock_qty)
+        pol = (
+            db.query(ItemPolicy)
+            .filter(ItemPolicy.item_id == f.item_id)
+            .first()
+        )
+        safety = Decimal(pol.safety_stock) if pol else Decimal("0")
+        net = max(Decimal("0"), Decimal(f.forecast_qty) + safety - on_hand)
+        if net <= 0:
+            continue
+        mps = MasterProductionSchedule(
+            item_id=f.item_id, period_code=period_code, planned_qty=net,
+            notes=f"forecast={f.forecast_qty} on_hand={on_hand} safety={safety}",
+        )
+        db.add(mps)
+        mps_rows.append(mps)
+
+        # Explode active BOM
+        bom = (
+            db.query(BillOfMaterials)
+            .options(selectinload(BillOfMaterials.components))
+            .filter(
+                BillOfMaterials.finished_item_id == f.item_id,
+                BillOfMaterials.is_active.is_(True),
+            )
+            .order_by(BillOfMaterials.id.desc())
+            .first()
+        )
+        if not bom:
+            continue
+        units = (net / Decimal(bom.output_quantity)).quantize(Decimal("0.0001"))
+        for comp in bom.components:
+            need = Decimal(comp.quantity_per) * units
+            component_demand[comp.component_item_id] = (
+                component_demand.get(comp.component_item_id, Decimal("0")) + need
+            )
+
+    # Net components against on-hand
+    mr_count = 0
+    for comp_id, gross in component_demand.items():
+        comp_item = db.query(Item).filter(Item.id == comp_id).first()
+        on_hand = Decimal(comp_item.stock_qty) if comp_item else Decimal("0")
+        net = max(Decimal("0"), gross - on_hand)
+        db.add(MaterialRequirement(
+            period_code=period_code, item_id=comp_id,
+            gross_required=gross, on_hand=on_hand, net_required=net,
+        ))
+        mr_count += 1
+
+    db.commit()
+    return {
+        "period_code": period_code,
+        "mps_count": len(mps_rows),
+        "mr_count": mr_count,
+    }
+
+
+@router.get("/mps")
+def list_mps(period_code: str, db: Session = Depends(get_db)):
+    rows = (
+        db.query(MasterProductionSchedule)
+        .filter(MasterProductionSchedule.period_code == period_code)
+        .order_by(MasterProductionSchedule.item_id)
+        .all()
+    )
+    return [
+        {
+            "id": r.id, "item_id": r.item_id, "period_code": r.period_code,
+            "planned_qty": float(r.planned_qty), "notes": r.notes,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/material-requirements")
+def list_material_requirements(period_code: str, db: Session = Depends(get_db)):
+    rows = (
+        db.query(MaterialRequirement)
+        .filter(MaterialRequirement.period_code == period_code)
+        .order_by(MaterialRequirement.item_id)
+        .all()
+    )
+    return [
+        {
+            "id": r.id, "item_id": r.item_id, "period_code": r.period_code,
+            "gross_required": float(r.gross_required),
+            "on_hand": float(r.on_hand),
+            "net_required": float(r.net_required),
+        }
+        for r in rows
+    ]

@@ -1,5 +1,5 @@
 """CRM endpoints: Lead capture → Opportunity pipeline → won/lost analytics."""
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -280,3 +280,184 @@ def pipeline_summary(
             for r in rows
         ]
     }
+
+
+# ---- Campaigns + Segments -------------------------------------------------
+
+
+import json as _json3
+from datetime import datetime as _dt4
+
+from app.modules.crm.models import (  # noqa: E402
+    Campaign,
+    CampaignSend,
+    CampaignStatus,
+    Segment,
+)
+from app.modules.sales.models import Customer  # noqa: E402
+
+
+class SegmentIn(BaseModel):
+    name: str
+    description: str | None = None
+    target_type: str = "lead"  # lead | customer
+    criteria: dict = {}
+
+
+class SegmentOut(BaseModel):
+    id: int
+    name: str
+    description: str | None
+    target_type: str
+    criteria: dict
+    model_config = ConfigDict(from_attributes=True)
+
+
+def _seg_to_out(s: Segment) -> dict:
+    return {
+        "id": s.id, "name": s.name, "description": s.description,
+        "target_type": s.target_type,
+        "criteria": _json3.loads(s.criteria) if s.criteria else {},
+    }
+
+
+@router.get("/segments", response_model=list[SegmentOut])
+def list_segments(db: Session = Depends(get_db)):
+    return [_seg_to_out(s) for s in db.query(Segment).order_by(Segment.name).all()]
+
+
+@router.post("/segments", response_model=SegmentOut)
+def create_segment(payload: SegmentIn, db: Session = Depends(get_db)):
+    if payload.target_type not in ("lead", "customer"):
+        raise HTTPException(status_code=400, detail="target_type must be lead|customer")
+    s = Segment(
+        name=payload.name, description=payload.description,
+        target_type=payload.target_type,
+        criteria=_json3.dumps(payload.criteria, ensure_ascii=False),
+    )
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return _seg_to_out(s)
+
+
+def _resolve_segment(db: Session, segment: Segment) -> list[tuple[int | None, str]]:
+    """Return (recipient_id, email) tuples that match the segment criteria."""
+    crit = _json3.loads(segment.criteria) if segment.criteria else {}
+    if segment.target_type == "customer":
+        q = db.query(Customer)
+        if "company" in crit:
+            q = q.filter(Customer.company == crit["company"])
+        rows = q.all()
+        return [(c.id, c.email) for c in rows if c.email]
+    else:
+        q = db.query(Lead)
+        if "status" in crit:
+            q = q.filter(Lead.status == crit["status"])
+        if "source" in crit:
+            q = q.filter(Lead.source == crit["source"])
+        rows = q.all()
+        return [(l.id, l.email) for l in rows if l.email]
+
+
+class CampaignIn(BaseModel):
+    name: str
+    segment_id: int
+    channel: str = "email"
+    subject: str | None = None
+    body: str | None = None
+    scheduled_at: datetime | None = None
+
+
+class CampaignOut(BaseModel):
+    id: int
+    name: str
+    segment_id: int
+    channel: str
+    subject: str | None
+    body: str | None
+    scheduled_at: datetime | None
+    sent_at: datetime | None
+    status: CampaignStatus
+    sent_count: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+@router.get("/campaigns", response_model=list[CampaignOut])
+def list_campaigns(db: Session = Depends(get_db)):
+    return db.query(Campaign).order_by(Campaign.created_at.desc()).all()
+
+
+@router.post("/campaigns", response_model=CampaignOut)
+def create_campaign(payload: CampaignIn, db: Session = Depends(get_db)):
+    if not db.query(Segment).filter(Segment.id == payload.segment_id).first():
+        raise HTTPException(status_code=404, detail="Segment not found")
+    c = Campaign(**payload.model_dump())
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return c
+
+
+@router.post("/campaigns/{cid}/send", response_model=CampaignOut)
+def send_campaign(cid: int, db: Session = Depends(get_db)):
+    """Resolve segment → enqueue per-recipient sends (mock delivery).
+
+    Production: hand off to an SMTP/SendGrid worker. Here we mark each
+    CampaignSend as sent immediately for traceability and update counters.
+    """
+    c = db.query(Campaign).filter(Campaign.id == cid).with_for_update().first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Not found")
+    if c.status not in (CampaignStatus.draft, CampaignStatus.scheduled):
+        raise HTTPException(status_code=400, detail=f"Cannot send from {c.status.value}")
+    seg = db.query(Segment).filter(Segment.id == c.segment_id).first()
+    recipients = _resolve_segment(db, seg)
+    now = _dt4.utcnow()
+    for rid, email in recipients:
+        # Idempotent — skip if already sent for this campaign+email
+        existing = (
+            db.query(CampaignSend)
+            .filter(
+                CampaignSend.campaign_id == c.id,
+                CampaignSend.recipient_email == email,
+            )
+            .first()
+        )
+        if existing:
+            continue
+        db.add(CampaignSend(
+            campaign_id=c.id, recipient_email=email, recipient_id=rid,
+            sent_at=now,
+        ))
+    c.sent_count = (
+        db.query(CampaignSend)
+        .filter(CampaignSend.campaign_id == c.id)
+        .count() + len(recipients)
+    )
+    c.sent_at = now
+    c.status = CampaignStatus.sent
+    db.commit()
+    db.refresh(c)
+    return c
+
+
+@router.get("/campaigns/{cid}/sends")
+def list_campaign_sends(cid: int, db: Session = Depends(get_db)):
+    rows = (
+        db.query(CampaignSend)
+        .filter(CampaignSend.campaign_id == cid)
+        .order_by(CampaignSend.sent_at.desc())
+        .all()
+    )
+    return [
+        {
+            "id": s.id,
+            "recipient_email": s.recipient_email,
+            "recipient_id": s.recipient_id,
+            "sent_at": s.sent_at.isoformat() if s.sent_at else None,
+            "opened_at": s.opened_at.isoformat() if s.opened_at else None,
+            "clicked_at": s.clicked_at.isoformat() if s.clicked_at else None,
+        }
+        for s in rows
+    ]

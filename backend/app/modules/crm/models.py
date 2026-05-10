@@ -78,3 +78,59 @@ class StageChange(BaseEntity):
     comment: Mapped[str | None] = mapped_column(String(500))
 
     opportunity: Mapped[Opportunity] = relationship(back_populates="history")
+
+
+class CampaignStatus(str, PyEnum):
+    draft = "draft"
+    scheduled = "scheduled"
+    sending = "sending"
+    sent = "sent"
+    cancelled = "cancelled"
+
+
+class Segment(BaseEntity):
+    """A saved customer/lead query — used to target campaigns."""
+
+    __tablename__ = "crm_segments"
+
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(500))
+    target_type: Mapped[str] = mapped_column(String(20), default="lead")  # lead|customer
+    # JSON criteria; e.g. {"status": "qualified", "source": "website"}
+    criteria: Mapped[str] = mapped_column(String(2000), default="{}")
+
+
+class Campaign(BaseEntity):
+    """An outbound campaign (email/SMS) to a Segment."""
+
+    __tablename__ = "crm_campaigns"
+
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    segment_id: Mapped[int] = mapped_column(
+        ForeignKey("crm_segments.id"), nullable=False, index=True
+    )
+    channel: Mapped[str] = mapped_column(String(20), default="email")  # email|sms
+    subject: Mapped[str | None] = mapped_column(String(500))
+    body: Mapped[str | None] = mapped_column(String(8000))
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    status: Mapped[CampaignStatus] = mapped_column(
+        Enum(CampaignStatus), default=CampaignStatus.draft, nullable=False, index=True
+    )
+    sent_count: Mapped[int] = mapped_column(default=0)
+
+
+class CampaignSend(BaseEntity):
+    """Per-recipient send record (idempotent)."""
+
+    __tablename__ = "crm_campaign_sends"
+
+    campaign_id: Mapped[int] = mapped_column(
+        ForeignKey("crm_campaigns.id"), nullable=False, index=True
+    )
+    recipient_email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    recipient_id: Mapped[int | None] = mapped_column()  # lead_id or customer_id
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime)
+    clicked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    error_message: Mapped[str | None] = mapped_column(String(500))

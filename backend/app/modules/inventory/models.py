@@ -23,6 +23,7 @@ class Item(BaseEntity):
     unit: Mapped[str] = mapped_column(String(20), default="EA")
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
     stock_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"))
+    barcode: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
 
 
 class Warehouse(BaseEntity):

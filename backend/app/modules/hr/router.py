@@ -744,3 +744,232 @@ def attendance_summary(
         "total_hours": round(total / 60, 2),
         "overtime_hours": round(overtime / 60, 2),
     }
+
+
+# ---- Year-end settlement + Performance review -----------------------------
+
+
+from app.modules.hr.models import (  # noqa: E402
+    PerformanceReview,
+    YearEndSettlement,
+)
+
+
+def _yes_compute_owed(taxable: _D) -> _D:
+    """Annual tax = piecewise progressive Korean income tax (simplified 2026)."""
+    brackets = [
+        (_D("14000000"), _D("0.06"), _D("0")),
+        (_D("50000000"), _D("0.15"), _D("1260000")),
+        (_D("88000000"), _D("0.24"), _D("5760000")),
+        (_D("150000000"), _D("0.35"), _D("15440000")),
+        (_D("300000000"), _D("0.38"), _D("19940000")),
+        (_D("500000000"), _D("0.40"), _D("25940000")),
+        (_D("1000000000"), _D("0.42"), _D("35940000")),
+    ]
+    if taxable <= 0:
+        return _D("0")
+    for cap, rate, deduct in brackets:
+        if taxable <= cap:
+            return (taxable * rate - deduct).quantize(_D("1"))
+    # Top bracket: 45%
+    return (taxable * _D("0.45") - _D("65940000")).quantize(_D("1"))
+
+
+class YESIn(_BaseModel):
+    employee_id: int
+    tax_year: int
+    deductions: _D = _D("0")
+    credits: _D = _D("0")
+    notes: str | None = None
+
+
+class YESOut(_BaseModel):
+    id: int
+    employee_id: int
+    tax_year: int
+    gross_annual: _D
+    deductions: _D
+    credits: _D
+    tax_withheld: _D
+    tax_owed: _D
+    refund_or_due: _D
+    notes: str | None
+    model_config = _Cfg(from_attributes=True)
+
+
+@router.post(
+    "/year-end-settlement",
+    response_model=YESOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def run_year_end_settlement(payload: YESIn, db: Session = Depends(get_db)):
+    """Compute year-end settlement: sum of payrolls in `tax_year`, apply
+    deductions + credits, derive owed tax, refund or extra payment."""
+    pays = (
+        db.query(Payroll)
+        .filter(
+            Payroll.employee_id == payload.employee_id,
+            Payroll.period_code.like(f"{payload.tax_year}-%"),
+        )
+        .all()
+    )
+    if not pays:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No payrolls for employee {payload.employee_id} in {payload.tax_year}",
+        )
+    gross = sum(
+        (_D(p.base_salary) + _D(p.bonus) + _D(p.allowance) for p in pays),
+        _D("0"),
+    )
+    withheld = sum((_D(p.income_tax) for p in pays), _D("0"))
+    taxable = max(_D("0"), gross - _D(payload.deductions))
+    owed = _yes_compute_owed(taxable)
+    after_credit = max(_D("0"), owed - _D(payload.credits))
+    refund = withheld - after_credit  # 양수=환급, 음수=추가납부
+
+    existing = (
+        db.query(YearEndSettlement)
+        .filter(
+            YearEndSettlement.employee_id == payload.employee_id,
+            YearEndSettlement.tax_year == payload.tax_year,
+        )
+        .with_for_update()
+        .first()
+    )
+    if existing:
+        existing.gross_annual = gross
+        existing.deductions = payload.deductions
+        existing.credits = payload.credits
+        existing.tax_withheld = withheld
+        existing.tax_owed = after_credit
+        existing.refund_or_due = refund
+        existing.notes = payload.notes
+        yes = existing
+    else:
+        yes = YearEndSettlement(
+            employee_id=payload.employee_id, tax_year=payload.tax_year,
+            gross_annual=gross, deductions=payload.deductions, credits=payload.credits,
+            tax_withheld=withheld, tax_owed=after_credit, refund_or_due=refund,
+            notes=payload.notes,
+        )
+        db.add(yes)
+    db.commit()
+    db.refresh(yes)
+    return yes
+
+
+@router.get("/year-end-settlement", response_model=list[YESOut])
+def list_year_end(
+    tax_year: int | None = None,
+    employee_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    q = db.query(YearEndSettlement)
+    if tax_year is not None:
+        q = q.filter(YearEndSettlement.tax_year == tax_year)
+    if employee_id is not None:
+        q = q.filter(YearEndSettlement.employee_id == employee_id)
+    return q.order_by(YearEndSettlement.tax_year.desc(), YearEndSettlement.employee_id).all()
+
+
+# ---- Performance reviews --------------------------------------------------
+
+
+import json as _json2  # noqa: E402
+
+
+class KPIScore(_BaseModel):
+    kpi: str
+    target: float
+    actual: float
+    score: int  # 1-5
+
+
+class ReviewIn(_BaseModel):
+    employee_id: int
+    period_code: str
+    overall_rating: int | None = None
+    kpi_scores: list[KPIScore] = []
+    comments: str | None = None
+    finalize: bool = False
+
+
+class ReviewOut(_BaseModel):
+    id: int
+    employee_id: int
+    period_code: str
+    reviewer_id: int | None
+    overall_rating: int | None
+    kpi_scores: list[dict]
+    comments: str | None
+    finalized_at: _date | None
+    model_config = _Cfg(from_attributes=True)
+
+
+def _review_to_out(r: PerformanceReview) -> dict:
+    return {
+        "id": r.id, "employee_id": r.employee_id, "period_code": r.period_code,
+        "reviewer_id": r.reviewer_id, "overall_rating": r.overall_rating,
+        "kpi_scores": _json2.loads(r.kpi_scores) if r.kpi_scores else [],
+        "comments": r.comments, "finalized_at": r.finalized_at,
+    }
+
+
+@router.get("/reviews", response_model=list[ReviewOut])
+def list_reviews(
+    employee_id: int | None = None,
+    period_code: str | None = None,
+    db: Session = Depends(get_db),
+):
+    q = db.query(PerformanceReview).order_by(PerformanceReview.period_code.desc())
+    if employee_id is not None:
+        q = q.filter(PerformanceReview.employee_id == employee_id)
+    if period_code:
+        q = q.filter(PerformanceReview.period_code == period_code)
+    return [_review_to_out(r) for r in q.all()]
+
+
+@router.post(
+    "/reviews",
+    response_model=ReviewOut,
+    dependencies=[Depends(require_role("manager"))],
+)
+def upsert_review(
+    payload: ReviewIn,
+    db: Session = Depends(get_db),
+    user: _User = Depends(get_current_user),
+):
+    if payload.overall_rating is not None and not (1 <= payload.overall_rating <= 5):
+        raise HTTPException(status_code=400, detail="overall_rating must be 1-5")
+    existing = (
+        db.query(PerformanceReview)
+        .filter(
+            PerformanceReview.employee_id == payload.employee_id,
+            PerformanceReview.period_code == payload.period_code,
+        )
+        .with_for_update()
+        .first()
+    )
+    if existing and existing.finalized_at is not None:
+        raise HTTPException(status_code=400, detail="Review already finalized")
+    if existing:
+        existing.overall_rating = payload.overall_rating
+        existing.kpi_scores = _json2.dumps([k.model_dump() for k in payload.kpi_scores])
+        existing.comments = payload.comments
+        existing.reviewer_id = user.id
+        if payload.finalize:
+            existing.finalized_at = _date.today()
+        r = existing
+    else:
+        r = PerformanceReview(
+            employee_id=payload.employee_id, period_code=payload.period_code,
+            reviewer_id=user.id, overall_rating=payload.overall_rating,
+            kpi_scores=_json2.dumps([k.model_dump() for k in payload.kpi_scores]),
+            comments=payload.comments,
+            finalized_at=_date.today() if payload.finalize else None,
+        )
+        db.add(r)
+    db.commit()
+    db.refresh(r)
+    return _review_to_out(r)

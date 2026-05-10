@@ -1658,3 +1658,226 @@ def test_wms_return_restocks(client, admin_auth, db_session):
 
     db_session.refresh(item)
     assert Decimal(item.stock_qty) == stock_before + Decimal("5")
+
+
+# --- Phase 8: MRP, year-end, reviews, campaigns, barcode -------------------
+
+
+def test_mrp_run_explodes_bom(client, admin_auth, db_session):
+    """MRP: forecast 100 finished units → MPS 100 → 200 raw1 + 300 raw2 needed."""
+    from app.modules.inventory.models import Item
+    from app.modules.manufacturing.models import BillOfMaterials, BomComponent
+
+    finished = Item(sku="MRP-FG", name="완제품", stock_qty=Decimal("0"))
+    raw1 = Item(sku="MRP-R1", name="원료1", stock_qty=Decimal("50"))
+    raw2 = Item(sku="MRP-R2", name="원료2", stock_qty=Decimal("0"))
+    db_session.add_all([finished, raw1, raw2])
+    db_session.flush()
+    bom = BillOfMaterials(
+        finished_item_id=finished.id, version="v1",
+        output_quantity=Decimal("1"), is_active=True,
+    )
+    bom.components.append(BomComponent(
+        component_item_id=raw1.id, quantity_per=Decimal("2"),
+    ))
+    bom.components.append(BomComponent(
+        component_item_id=raw2.id, quantity_per=Decimal("3"),
+    ))
+    db_session.add(bom)
+    db_session.commit()
+
+    # Forecast: 100 finished units in 2026-W20
+    f = client.post(
+        "/api/manufacturing/forecasts",
+        headers=admin_auth["headers"],
+        json={"item_id": finished.id, "period_code": "2026-W20",
+              "forecast_qty": 100},
+    )
+    assert f.status_code == 200, f.text
+
+    run = client.post(
+        "/api/manufacturing/mrp-run?period_code=2026-W20",
+        headers=admin_auth["headers"],
+    )
+    assert run.status_code == 200, run.text
+    assert run.json()["mps_count"] == 1
+    assert run.json()["mr_count"] == 2
+
+    # MR: raw1 needs 200 - 50 = 150 net; raw2 needs 300 - 0 = 300 net
+    mrs = client.get(
+        "/api/manufacturing/material-requirements?period_code=2026-W20",
+        headers=admin_auth["headers"],
+    ).json()
+    by_item = {m["item_id"]: m for m in mrs}
+    assert by_item[raw1.id]["gross_required"] == 200
+    assert by_item[raw1.id]["net_required"] == 150
+    assert by_item[raw2.id]["net_required"] == 300
+
+
+def test_mrp_run_idempotent(client, admin_auth, db_session):
+    """Re-running MRP for same period replaces previous output cleanly."""
+    from app.modules.inventory.models import Item
+
+    item = Item(sku="MRP-IDEM", name="재실행", stock_qty=Decimal("0"))
+    db_session.add(item)
+    db_session.commit()
+    client.post(
+        "/api/manufacturing/forecasts",
+        headers=admin_auth["headers"],
+        json={"item_id": item.id, "period_code": "2026-W21",
+              "forecast_qty": 50},
+    )
+    r1 = client.post(
+        "/api/manufacturing/mrp-run?period_code=2026-W21",
+        headers=admin_auth["headers"],
+    )
+    r2 = client.post(
+        "/api/manufacturing/mrp-run?period_code=2026-W21",
+        headers=admin_auth["headers"],
+    )
+    assert r1.json()["mps_count"] == r2.json()["mps_count"]
+    # Only one MPS row should exist
+    mps = client.get(
+        "/api/manufacturing/mps?period_code=2026-W21",
+        headers=admin_auth["headers"],
+    ).json()
+    assert len(mps) == 1
+
+
+def test_year_end_settlement_refund(client, admin_auth, db_session):
+    """If withholding > owed tax → refund (양수)."""
+    from app.modules.hr.models import Employee, Payroll, PayrollStatus
+
+    emp = Employee(employee_no="YES-1", full_name="연말이",
+                   email="ye@x.com", salary=Decimal("60000000"))
+    db_session.add(emp)
+    db_session.flush()
+    # 12 months @ 5M base + 100k tax/month withheld
+    for m in range(1, 13):
+        db_session.add(Payroll(
+            employee_id=emp.id, period_code=f"2026-{m:02d}",
+            base_salary=Decimal("5000000"), bonus=Decimal("0"),
+            allowance=Decimal("0"), deduction=Decimal("0"),
+            income_tax=Decimal("100000"), net_pay=Decimal("4900000"),
+            status=PayrollStatus.paid,
+        ))
+    db_session.commit()
+
+    res = client.post(
+        "/api/hr/year-end-settlement",
+        headers=admin_auth["headers"],
+        json={
+            "employee_id": emp.id, "tax_year": 2026,
+            "deductions": 15000000, "credits": 500000,
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert float(body["gross_annual"]) == 60_000_000
+    assert float(body["tax_withheld"]) == 1_200_000
+    # taxable = 60M - 15M = 45M → 15% bracket: 45M*0.15 - 1.26M = 5.49M
+    # after credits: 5.49M - 0.5M = 4.99M owed
+    # withheld 1.2M < owed 4.99M → 추가 납부 (refund_or_due 음수)
+    assert float(body["refund_or_due"]) < 0
+
+
+def test_performance_review_finalize_locks(client, admin_auth, db_session):
+    """Finalized review cannot be edited."""
+    from app.modules.hr.models import Employee
+
+    emp = Employee(employee_no="PR-1", full_name="평가대상",
+                   email="pr@x.com", salary=Decimal("3000000"))
+    db_session.add(emp)
+    db_session.commit()
+
+    r1 = client.post(
+        "/api/hr/reviews",
+        headers=admin_auth["headers"],
+        json={
+            "employee_id": emp.id, "period_code": "2026-Q1",
+            "overall_rating": 4,
+            "kpi_scores": [
+                {"kpi": "매출 달성", "target": 100, "actual": 95, "score": 4},
+            ],
+            "comments": "양호",
+            "finalize": True,
+        },
+    )
+    assert r1.status_code == 200, r1.text
+
+    # Edit attempt after finalize should fail
+    r2 = client.post(
+        "/api/hr/reviews",
+        headers=admin_auth["headers"],
+        json={
+            "employee_id": emp.id, "period_code": "2026-Q1",
+            "overall_rating": 5,
+        },
+    )
+    assert r2.status_code == 400
+
+
+def test_campaign_send_delivers_to_segment(client, admin_auth, db_session):
+    """Campaign send creates one CampaignSend per segment match."""
+    from app.modules.crm.models import Lead
+
+    db_session.add_all([
+        Lead(name="L1", email="l1@x.com", source="website"),
+        Lead(name="L2", email="l2@x.com", source="website"),
+        Lead(name="L3", email="l3@x.com", source="referral"),
+    ])
+    db_session.commit()
+
+    seg = client.post(
+        "/api/crm/segments",
+        headers=admin_auth["headers"],
+        json={"name": "웹사이트 리드", "target_type": "lead",
+              "criteria": {"source": "website"}},
+    ).json()
+    camp = client.post(
+        "/api/crm/campaigns",
+        headers=admin_auth["headers"],
+        json={"name": "5월 프로모", "segment_id": seg["id"],
+              "subject": "5월 신상품 안내", "body": "..."},
+    ).json()
+    sent = client.post(
+        f"/api/crm/campaigns/{camp['id']}/send",
+        headers=admin_auth["headers"],
+    )
+    assert sent.status_code == 200, sent.text
+    sends = client.get(
+        f"/api/crm/campaigns/{camp['id']}/sends",
+        headers=admin_auth["headers"],
+    ).json()
+    assert len(sends) == 2  # only website leads
+
+
+def test_barcode_scan_lookup_and_movement(client, admin_auth, db_session):
+    """Barcode-driven movement creates inventory entry."""
+    from app.modules.inventory.models import Item
+
+    item = Item(sku="BAR-1", name="바코드품목",
+                stock_qty=Decimal("50"), barcode="8801234567890")
+    db_session.add(item)
+    db_session.commit()
+
+    look = client.get(
+        "/api/inventory/scan/8801234567890",
+        headers=admin_auth["headers"],
+    )
+    assert look.status_code == 200
+    assert look.json()["sku"] == "BAR-1"
+
+    bad = client.get(
+        "/api/inventory/scan/0000000000000",
+        headers=admin_auth["headers"],
+    )
+    assert bad.status_code == 404
+
+    move = client.post(
+        "/api/inventory/scan-movement?barcode=8801234567890&movement_type=outbound&quantity=5",
+        headers=admin_auth["headers"],
+    )
+    assert move.status_code == 200, move.text
+    db_session.refresh(item)
+    assert Decimal(item.stock_qty) == Decimal("45")
