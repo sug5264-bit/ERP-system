@@ -10,9 +10,13 @@ export type ModuleDef = {
 
 export const MODULES: ModuleDef[] = [
   { key: "hr", labelKey: "nav.hr", href: "/hr" },
+  { key: "payroll", labelKey: "nav.payroll", href: "/hr/payroll" },
   { key: "finance", labelKey: "nav.finance", href: "/finance" },
+  { key: "periods", labelKey: "nav.periods", href: "/finance/periods", minRole: "manager" },
   { key: "inventory", labelKey: "nav.inventory", href: "/inventory" },
+  { key: "manufacturing", labelKey: "nav.manufacturing", href: "/manufacturing" },
   { key: "sales", labelKey: "nav.sales", href: "/sales" },
+  { key: "billing", labelKey: "nav.billing", href: "/billing" },
   { key: "approvals", labelKey: "nav.approvals", href: "/approvals" },
   { key: "suppliers", labelKey: "nav.suppliers", href: "/suppliers" },
   { key: "reports", labelKey: "nav.reports", href: "/reports" },
@@ -68,5 +72,11 @@ export const ADMIN_MODULES: ModuleDef[] = [
     labelKey: "nav.admin.edi",
     href: "/admin/edi",
     minRole: "admin",
+  },
+  {
+    key: "admin-report-builder",
+    labelKey: "nav.admin.reportBuilder",
+    href: "/admin/reports",
+    minRole: "viewer",
   },
 ];
