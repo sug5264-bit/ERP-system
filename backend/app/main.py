@@ -40,6 +40,8 @@ MODULES = [
     "billing",
     "manufacturing",
     "report_builder",
+    "assets",
+    "crm",
 ]
 
 

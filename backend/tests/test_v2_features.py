@@ -595,3 +595,165 @@ def test_expiring_lots_endpoint(client, admin_auth, db_session):
     rows = res.json()
     nums = {r["lot_number"] for r in rows}
     assert "SOON" in nums and "FAR" not in nums
+
+
+# --- Phase 3: assets, CRM, 3-way matching ----------------------------------
+
+
+def test_asset_depreciation_idempotent(client, admin_auth, db_session):
+    """Running depreciation twice for the same period skips already-posted assets."""
+    res = client.post(
+        "/api/assets/assets",
+        headers=admin_auth["headers"],
+        json={
+            "asset_no": "DEP-1",
+            "name": "Test laptop",
+            "acquired_date": "2026-01-01",
+            "acquired_cost": 1200,
+            "useful_life_months": 12,
+            "method": "straight_line",
+        },
+    )
+    assert res.status_code == 200, res.text
+
+    # First run: 1 entry (1200/12 = 100)
+    r1 = client.post(
+        "/api/assets/depreciation/run?period_code=2026-05",
+        headers=admin_auth["headers"],
+    )
+    assert r1.status_code == 200
+    assert r1.json()["new_entries"] == 1
+    assert r1.json()["total_amount"] == 100.0
+
+    # Second run for same period: no new entries
+    r2 = client.post(
+        "/api/assets/depreciation/run?period_code=2026-05",
+        headers=admin_auth["headers"],
+    )
+    assert r2.json()["new_entries"] == 0
+    assert r2.json()["skipped"] == 1
+
+
+def test_crm_lead_to_opportunity_pipeline(client, admin_auth, db_session):
+    # Create lead
+    res = client.post(
+        "/api/crm/leads",
+        headers=admin_auth["headers"],
+        json={"name": "김잠재", "company": "ACME 식자재", "email": "k@a.com"},
+    )
+    assert res.status_code == 200, res.text
+    lead_id = res.json()["id"]
+
+    # Convert
+    conv = client.post(
+        f"/api/crm/leads/{lead_id}/convert",
+        headers=admin_auth["headers"],
+    )
+    assert conv.status_code == 200, conv.text
+    opp_id = conv.json()["id"]
+    assert conv.json()["stage"] == "prospecting"
+
+    # Lead now has converted status
+    leads = client.get("/api/crm/leads", headers=admin_auth["headers"]).json()
+    found = next(l for l in leads["items"] if l["id"] == lead_id)
+    assert found["status"] == "converted"
+    assert found["converted_opportunity_id"] == opp_id
+
+    # Move stage to won
+    won = client.post(
+        f"/api/crm/opportunities/{opp_id}/stage",
+        headers=admin_auth["headers"],
+        json={"to_stage": "won", "comment": "계약 체결"},
+    )
+    assert won.json()["stage"] == "won"
+    assert won.json()["probability"] == 100
+
+    # Pipeline summary should report 1 won
+    summary = client.get(
+        "/api/crm/pipeline/summary", headers=admin_auth["headers"]
+    ).json()
+    won_stage = next(s for s in summary["stages"] if s["stage"] == "won")
+    assert won_stage["count"] == 1
+
+
+def test_three_way_matching_pass_and_reject(client, admin_auth, db_session):
+    """Happy path matches; mismatch is rejected with notes."""
+    from app.modules.suppliers.models import POStatus, PurchaseOrder, PurchaseOrderItem, Supplier
+    from app.modules.inventory.models import Item
+
+    sup = Supplier(code="SUP-MATCH", name="공급사X")
+    item = Item(sku="ING-1", name="원료", stock_qty=Decimal("0"))
+    db_session.add_all([sup, item])
+    db_session.flush()
+    po = PurchaseOrder(
+        po_no="PO-MATCH-1",
+        supplier_id=sup.id,
+        status=POStatus.acknowledged,
+        total=Decimal("1000"),
+    )
+    po.items.append(
+        PurchaseOrderItem(item_id=item.id, quantity=Decimal("10"), unit_price=Decimal("100"))
+    )
+    db_session.add(po)
+    db_session.commit()
+    poi_id = po.items[0].id
+
+    # Receipt: full quantity
+    gr = client.post(
+        "/api/suppliers/goods-receipts",
+        headers=admin_auth["headers"],
+        json={
+            "gr_no": "GR-1",
+            "po_id": po.id,
+            "items": [{"po_item_id": poi_id, "received_qty": 10}],
+        },
+    )
+    assert gr.status_code == 200, gr.text
+    gr_id = gr.json()["id"]
+    assert client.post(
+        f"/api/suppliers/goods-receipts/{gr_id}/post",
+        headers=admin_auth["headers"],
+    ).status_code == 200
+
+    # Supplier invoice: matching total (1000 + 0 tax)
+    inv = client.post(
+        "/api/suppliers/supplier-invoices",
+        headers=admin_auth["headers"],
+        json={
+            "supplier_id": sup.id,
+            "po_id": po.id,
+            "vendor_invoice_no": "VINV-1",
+            "invoice_date": "2026-05-01",
+            "subtotal": 1000,
+            "tax": 0,
+            "total": 1000,
+        },
+    )
+    inv_id = inv.json()["id"]
+    matched = client.post(
+        f"/api/suppliers/supplier-invoices/{inv_id}/match",
+        headers=admin_auth["headers"],
+    )
+    assert matched.status_code == 200, matched.text
+    assert matched.json()["status"] == "matched"
+
+    # Reject case: supply a 2nd invoice with wrong total
+    inv2 = client.post(
+        "/api/suppliers/supplier-invoices",
+        headers=admin_auth["headers"],
+        json={
+            "supplier_id": sup.id,
+            "po_id": po.id,
+            "vendor_invoice_no": "VINV-2",
+            "invoice_date": "2026-05-02",
+            "subtotal": 1500,
+            "tax": 0,
+            "total": 1500,
+        },
+    )
+    rejected = client.post(
+        f"/api/suppliers/supplier-invoices/{inv2.json()['id']}/match",
+        headers=admin_auth["headers"],
+    )
+    assert rejected.json()["status"] == "rejected"
+    assert "Total mismatch" in rejected.json()["match_notes"]

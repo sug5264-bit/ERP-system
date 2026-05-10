@@ -19,6 +19,9 @@ export const MODULES: ModuleDef[] = [
   { key: "billing", labelKey: "nav.billing", href: "/billing" },
   { key: "approvals", labelKey: "nav.approvals", href: "/approvals" },
   { key: "suppliers", labelKey: "nav.suppliers", href: "/suppliers" },
+  { key: "matching", labelKey: "nav.matching", href: "/suppliers/matching" },
+  { key: "crm", labelKey: "nav.crm", href: "/crm" },
+  { key: "assets", labelKey: "nav.assets", href: "/assets" },
   { key: "reports", labelKey: "nav.reports", href: "/reports" },
 ];
 

@@ -14,6 +14,7 @@ from app.core.auth import (
     get_current_internal_user,
     get_current_user,
     is_supplier_user,
+    require_module_role,
     require_role,
 )
 from app.core.db import get_db
@@ -377,3 +378,312 @@ def delete_supplier(supplier_id: int, db: Session = Depends(get_db)):
     db.delete(sup)
     db.commit()
     return {"ok": True}
+
+
+# ---- Goods Receipt + 3-way matching ---------------------------------------
+
+
+from datetime import date as _date  # noqa: E402
+from decimal import Decimal as _D  # noqa: E402
+
+from pydantic import BaseModel as _BM, ConfigDict as _Cfg, Field as _Field  # noqa: E402
+
+from app.modules.inventory.schemas import StockMovementCreate as _StockMovementCreate  # noqa: E402
+from app.modules.inventory.service import create_movement as _create_movement  # noqa: E402
+from app.modules.inventory.models import MovementType as _MovementType  # noqa: E402
+from app.modules.suppliers.models import (  # noqa: E402
+    GRStatus,
+    GoodsReceipt,
+    GoodsReceiptItem,
+    POStatus as _POStatus,
+    PurchaseOrder as _PO,
+    PurchaseOrderItem as _POItem,
+    SupplierInvoice,
+    SupplierInvoiceStatus,
+)
+
+
+class GRItemIn(_BM):
+    po_item_id: int
+    received_qty: _D
+    lot_id: int | None = None
+
+
+class GRIn(_BM):
+    gr_no: str
+    po_id: int
+    received_date: _date | None = None
+    notes: str | None = None
+    items: list[GRItemIn] = _Field(min_length=1)
+
+
+class GRItemOut(GRItemIn):
+    id: int
+    model_config = _Cfg(from_attributes=True)
+
+
+class GROut(_BM):
+    id: int
+    gr_no: str
+    po_id: int
+    received_date: _date
+    status: GRStatus
+    notes: str | None
+    items: list[GRItemOut]
+    model_config = _Cfg(from_attributes=True)
+
+
+class SupplierInvoiceIn(_BM):
+    supplier_id: int
+    po_id: int | None = None
+    vendor_invoice_no: str
+    invoice_date: _date
+    subtotal: _D
+    tax: _D = _D("0")
+    total: _D
+
+
+class SupplierInvoiceOut(SupplierInvoiceIn):
+    id: int
+    status: SupplierInvoiceStatus
+    match_notes: str | None
+    model_config = _Cfg(from_attributes=True)
+
+
+@router.get("/goods-receipts", response_model=Page[GROut])
+def list_grs(
+    po_id: int | None = None,
+    params: PageParams = Depends(),
+    db: Session = Depends(get_db),
+):
+    from sqlalchemy.orm import selectinload as _sel
+
+    q = (
+        db.query(GoodsReceipt)
+        .options(_sel(GoodsReceipt.items))
+        .order_by(GoodsReceipt.received_date.desc())
+    )
+    if po_id is not None:
+        q = q.filter(GoodsReceipt.po_id == po_id)
+    return paginate(q, params)
+
+
+@router.post(
+    "/goods-receipts",
+    response_model=GROut,
+    dependencies=[Depends(require_module_role("inventory", "staff"))],
+)
+def create_gr(payload: GRIn, db: Session = Depends(get_db)):
+    if db.query(GoodsReceipt).filter(GoodsReceipt.gr_no == payload.gr_no).first():
+        raise HTTPException(status_code=400, detail="GR no already exists")
+    po = (
+        db.query(_PO)
+        .filter(_PO.id == payload.po_id)
+        .with_for_update()
+        .first()
+    )
+    if not po:
+        raise HTTPException(status_code=404, detail="PO not found")
+    if po.status not in (_POStatus.acknowledged, _POStatus.shipped):
+        raise HTTPException(
+            status_code=400,
+            detail=f"PO must be acknowledged or shipped (got {po.status.value})",
+        )
+
+    # Pre-flight: check no line over-receives
+    by_id = {pi.id: pi for pi in po.items}
+    for li in payload.items:
+        pi = by_id.get(li.po_item_id)
+        if not pi:
+            raise HTTPException(status_code=400, detail=f"PO item {li.po_item_id} not on this PO")
+        if _D(pi.received_qty) + _D(li.received_qty) > _D(pi.quantity):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Over-receipt on PO item {pi.id}: "
+                f"{pi.received_qty}+{li.received_qty} > {pi.quantity}",
+            )
+
+    gr = GoodsReceipt(
+        gr_no=payload.gr_no,
+        po_id=po.id,
+        received_date=payload.received_date or _date.today(),
+        notes=payload.notes,
+        status=GRStatus.draft,
+    )
+    for li in payload.items:
+        gr.items.append(GoodsReceiptItem(**li.model_dump()))
+    db.add(gr)
+    db.commit()
+    db.refresh(gr)
+    return gr
+
+
+@router.post(
+    "/goods-receipts/{gr_id}/post",
+    response_model=GROut,
+    dependencies=[Depends(require_module_role("inventory", "manager"))],
+)
+def post_gr(gr_id: int, db: Session = Depends(get_db)):
+    """Post a GR: bumps PO line received_qty and creates inbound movements."""
+    from sqlalchemy.orm import selectinload as _sel
+
+    gr = (
+        db.query(GoodsReceipt)
+        .options(_sel(GoodsReceipt.items))
+        .filter(GoodsReceipt.id == gr_id)
+        .with_for_update()
+        .first()
+    )
+    if not gr:
+        raise HTTPException(status_code=404, detail="GR not found")
+    if gr.status != GRStatus.draft:
+        raise HTTPException(status_code=400, detail=f"Already {gr.status.value}")
+
+    po = db.query(_PO).filter(_PO.id == gr.po_id).with_for_update().first()
+    by_id = {pi.id: pi for pi in po.items}
+    for li in gr.items:
+        pi = by_id[li.po_item_id]
+        # Update received_qty (with the lock held)
+        pi.received_qty = _D(pi.received_qty) + _D(li.received_qty)
+        try:
+            _create_movement(
+                db,
+                _StockMovementCreate(
+                    item_id=pi.item_id,
+                    type=_MovementType.inbound,
+                    quantity=li.received_qty,
+                    unit_cost=pi.unit_price,
+                    lot_id=li.lot_id,
+                    note=f"GR {gr.gr_no} (PO {po.po_no})",
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    # If every PO line is fully received, advance PO to received
+    if all(_D(pi.received_qty) >= _D(pi.quantity) for pi in po.items):
+        po.status = _POStatus.received
+
+    gr.status = GRStatus.posted
+    db.commit()
+    db.refresh(gr)
+    return gr
+
+
+@router.get("/supplier-invoices", response_model=Page[SupplierInvoiceOut])
+def list_sup_invoices(
+    status: SupplierInvoiceStatus | None = None,
+    params: PageParams = Depends(),
+    db: Session = Depends(get_db),
+):
+    q = db.query(SupplierInvoice).order_by(SupplierInvoice.invoice_date.desc())
+    if status:
+        q = q.filter(SupplierInvoice.status == status)
+    return paginate(q, params)
+
+
+@router.post(
+    "/supplier-invoices",
+    response_model=SupplierInvoiceOut,
+    dependencies=[Depends(require_module_role("finance", "staff"))],
+)
+def create_sup_invoice(payload: SupplierInvoiceIn, db: Session = Depends(get_db)):
+    inv = SupplierInvoice(**payload.model_dump())
+    db.add(inv)
+    db.commit()
+    db.refresh(inv)
+    return inv
+
+
+@router.post(
+    "/supplier-invoices/{inv_id}/match",
+    response_model=SupplierInvoiceOut,
+    dependencies=[Depends(require_module_role("finance", "manager"))],
+)
+def match_three_way(
+    inv_id: int,
+    tolerance: float = 0.01,
+    db: Session = Depends(get_db),
+):
+    """3-way matching: PO ↔ sum(GR) ↔ SupplierInvoice.
+
+    Passes if:
+      • Every PO line's received_qty equals the ordered qty (within tolerance)
+      • Sum(GR.qty * PO.unit_price) ≈ supplier invoice total (within tolerance)
+
+    On pass: status → matched, ready for payment.
+    On mismatch: status → rejected, with `match_notes` explaining why.
+    """
+    inv = (
+        db.query(SupplierInvoice)
+        .filter(SupplierInvoice.id == inv_id)
+        .with_for_update()
+        .first()
+    )
+    if not inv:
+        raise HTTPException(status_code=404, detail="Not found")
+    if inv.status == SupplierInvoiceStatus.paid:
+        raise HTTPException(status_code=400, detail="Already paid")
+    if not inv.po_id:
+        raise HTTPException(status_code=400, detail="Invoice has no linked PO — manual review")
+
+    po = (
+        db.query(_PO)
+        .filter(_PO.id == inv.po_id)
+        .with_for_update()
+        .first()
+    )
+    if not po:
+        raise HTTPException(status_code=404, detail="Linked PO not found")
+
+    tol = _D(str(tolerance))
+    issues: list[str] = []
+    expected_total = _D("0")
+    for pi in po.items:
+        diff = _D(pi.quantity) - _D(pi.received_qty)
+        if abs(diff) > tol:
+            issues.append(
+                f"PO line {pi.id}: ordered {pi.quantity}, received {pi.received_qty}"
+            )
+        expected_total += _D(pi.received_qty) * _D(pi.unit_price)
+
+    inv_total_diff = abs(_D(inv.total) - expected_total - _D(inv.tax))
+    if inv_total_diff > tol:
+        issues.append(
+            f"Total mismatch: invoice {inv.total} vs PO×GR+tax {expected_total + _D(inv.tax)}"
+        )
+
+    if issues:
+        inv.status = SupplierInvoiceStatus.rejected
+        inv.match_notes = "; ".join(issues)
+    else:
+        inv.status = SupplierInvoiceStatus.matched
+        inv.match_notes = None
+    db.commit()
+    db.refresh(inv)
+    return inv
+
+
+@router.post(
+    "/supplier-invoices/{inv_id}/mark-paid",
+    response_model=SupplierInvoiceOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def mark_sup_invoice_paid(inv_id: int, db: Session = Depends(get_db)):
+    inv = (
+        db.query(SupplierInvoice)
+        .filter(SupplierInvoice.id == inv_id)
+        .with_for_update()
+        .first()
+    )
+    if not inv:
+        raise HTTPException(status_code=404, detail="Not found")
+    if inv.status != SupplierInvoiceStatus.matched:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot pay invoice with status {inv.status.value} — must be matched first",
+        )
+    inv.status = SupplierInvoiceStatus.paid
+    db.commit()
+    db.refresh(inv)
+    return inv

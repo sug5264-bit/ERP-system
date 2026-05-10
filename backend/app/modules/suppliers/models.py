@@ -1,7 +1,8 @@
 from datetime import date
+from decimal import Decimal
 from enum import Enum as PyEnum
 
-from sqlalchemy import Boolean, Date, Enum, ForeignKey, Numeric, String
+from sqlalchemy import Boolean, Date, Enum, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.base_model import BaseEntity
@@ -59,8 +60,86 @@ class PurchaseOrderItem(BaseEntity):
         ForeignKey("purchase_orders.id"), nullable=False, index=True
     )
     item_id: Mapped[int] = mapped_column(ForeignKey("inv_items.id"), nullable=False)
-    quantity: Mapped[float] = mapped_column(Numeric(14, 3), nullable=False)
-    unit_price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
-    received_qty: Mapped[float] = mapped_column(Numeric(14, 3), default=0)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    received_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"))
 
     order: Mapped[PurchaseOrder] = relationship(back_populates="items")
+
+
+class GRStatus(str, PyEnum):
+    draft = "draft"
+    posted = "posted"
+
+
+class GoodsReceipt(BaseEntity):
+    """A receipt of physical goods against a PO. One PO can have many GRs
+    (partial receipts). Posting a GR generates inbound stock movements and
+    bumps the matching PO line's received_qty."""
+
+    __tablename__ = "purchase_goods_receipts"
+
+    gr_no: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
+    po_id: Mapped[int] = mapped_column(
+        ForeignKey("purchase_orders.id"), nullable=False, index=True
+    )
+    received_date: Mapped[date] = mapped_column(Date, default=date.today)
+    status: Mapped[GRStatus] = mapped_column(
+        Enum(GRStatus), default=GRStatus.draft, nullable=False, index=True
+    )
+    notes: Mapped[str | None] = mapped_column(String(1000))
+    posted_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+
+    items: Mapped[list["GoodsReceiptItem"]] = relationship(
+        back_populates="gr", cascade="all, delete-orphan"
+    )
+
+
+class GoodsReceiptItem(BaseEntity):
+    __tablename__ = "purchase_goods_receipt_items"
+
+    gr_id: Mapped[int] = mapped_column(
+        ForeignKey("purchase_goods_receipts.id"), nullable=False, index=True
+    )
+    po_item_id: Mapped[int] = mapped_column(
+        ForeignKey("purchase_order_items.id"), nullable=False
+    )
+    received_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
+    lot_id: Mapped[int | None] = mapped_column(ForeignKey("inv_lots.id"))
+
+    gr: Mapped[GoodsReceipt] = relationship(back_populates="items")
+
+
+class SupplierInvoiceStatus(str, PyEnum):
+    pending = "pending"
+    matched = "matched"  # 3-way match passed
+    rejected = "rejected"  # mismatch — manual review
+    paid = "paid"
+
+
+class SupplierInvoice(BaseEntity):
+    """Vendor's invoice. Required for 3-way matching: PO ↔ GR ↔ Invoice."""
+
+    __tablename__ = "purchase_supplier_invoices"
+    __table_args__ = (
+        UniqueConstraint(
+            "supplier_id", "vendor_invoice_no", name="uq_supplier_invoice_no"
+        ),
+    )
+
+    supplier_id: Mapped[int] = mapped_column(
+        ForeignKey("suppliers.id"), nullable=False, index=True
+    )
+    po_id: Mapped[int | None] = mapped_column(ForeignKey("purchase_orders.id"))
+    vendor_invoice_no: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    invoice_date: Mapped[date] = mapped_column(Date, nullable=False)
+    subtotal: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    tax: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
+    total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    status: Mapped[SupplierInvoiceStatus] = mapped_column(
+        Enum(SupplierInvoiceStatus),
+        default=SupplierInvoiceStatus.pending,
+        nullable=False,
+        index=True,
+    )
+    match_notes: Mapped[str | None] = mapped_column(String(1000))
