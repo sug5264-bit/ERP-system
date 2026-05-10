@@ -24,6 +24,8 @@ export const MODULES: ModuleDef[] = [
   { key: "crm", labelKey: "nav.crm", href: "/crm" },
   { key: "assets", labelKey: "nav.assets", href: "/assets" },
   { key: "projects", labelKey: "nav.projects", href: "/projects" },
+  { key: "reorder", labelKey: "nav.reorder", href: "/inventory/reorder" },
+  { key: "dashboards", labelKey: "nav.dashboards", href: "/dashboards" },
   { key: "reports", labelKey: "nav.reports", href: "/reports" },
 ];
 
@@ -95,5 +97,11 @@ export const ADMIN_MODULES: ModuleDef[] = [
     labelKey: "nav.admin.fx",
     href: "/admin/fx",
     minRole: "viewer",
+  },
+  {
+    key: "admin-privacy",
+    labelKey: "nav.admin.privacy",
+    href: "/admin/privacy",
+    minRole: "manager",
   },
 ];

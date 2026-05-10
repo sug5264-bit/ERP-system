@@ -77,3 +77,32 @@ class StockMovement(BaseEntity):
 
     item: Mapped[Item] = relationship()
     lot: Mapped["StockLot | None"] = relationship()
+
+
+class ABCClass(str, PyEnum):
+    A = "A"  # top 80% of value
+    B = "B"  # next 15%
+    C = "C"  # bottom 5%
+
+
+class ItemPolicy(BaseEntity):
+    """Stocking policy for a single item: reorder point + safety stock +
+    classification. One row per item (uniqueness enforced)."""
+
+    __tablename__ = "inv_item_policies"
+
+    item_id: Mapped[int] = mapped_column(
+        ForeignKey("inv_items.id"), nullable=False, unique=True, index=True
+    )
+    reorder_point: Mapped[Decimal] = mapped_column(
+        Numeric(14, 3), default=Decimal("0")
+    )
+    safety_stock: Mapped[Decimal] = mapped_column(
+        Numeric(14, 3), default=Decimal("0")
+    )
+    reorder_qty: Mapped[Decimal] = mapped_column(
+        Numeric(14, 3), default=Decimal("0")
+    )
+    preferred_supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"))
+    abc_class: Mapped[ABCClass | None] = mapped_column(Enum(ABCClass), index=True)
+    last_classified_at: Mapped[datetime | None] = mapped_column(DateTime)

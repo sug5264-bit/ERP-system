@@ -45,6 +45,8 @@ MODULES = [
     "etax",
     "projects",
     "fx",
+    "dashboards",
+    "privacy",
 ]
 
 

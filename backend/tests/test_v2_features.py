@@ -1170,3 +1170,269 @@ def test_leave_request_requires_role(client, db_session):
         },
     )
     assert res.status_code == 403
+
+
+# --- Phase 6: ABC, dashboards, SLA/delegation, privacy --------------------
+
+
+def test_abc_classify_pareto_split(client, admin_auth, db_session):
+    """80/15/5 ABC split based on outbound value."""
+    from app.modules.inventory.models import Item, MovementType, StockMovement
+
+    # 5 items with very different outbound values
+    items = []
+    for i, val in enumerate([1000, 500, 100, 50, 10]):
+        it = Item(sku=f"ABC-{i}", name=f"item{i}", stock_qty=Decimal("100"))
+        db_session.add(it)
+        db_session.flush()
+        items.append(it)
+        # synthetic outbound at unit_cost=1, qty=val
+        db_session.add(StockMovement(
+            item_id=it.id, type=MovementType.outbound,
+            quantity=Decimal(str(val)), unit_cost=Decimal("1"),
+        ))
+    db_session.commit()
+
+    res = client.post(
+        "/api/inventory/abc-classify?days=365",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["classified"] == 5
+    # Values 1000/500/100/50/10 (total 1660). Cumul ratios:
+    #   0.602  → A (≤0.80)
+    #   0.903  → B (>0.80, ≤0.95)
+    #   0.964  → C (>0.95)
+    #   0.994  → C
+    #   1.000  → C
+    assert body["A"] == 1
+    assert body["B"] == 1
+    assert body["C"] == 3
+
+
+def test_reorder_suggestions_and_auto_po(client, admin_auth, db_session):
+    """Items below reorder_point appear in suggestions and form draft POs."""
+    from app.modules.inventory.models import Item
+    from app.modules.suppliers.models import Supplier, PurchaseOrder
+
+    sup = Supplier(code="SUP-AUTO", name="자동발주공급사")
+    item = Item(sku="LOW-1", name="저재고", stock_qty=Decimal("5"),
+                unit_price=Decimal("100"))
+    db_session.add_all([sup, item])
+    db_session.commit()
+
+    # Set policy: reorder when stock_qty <= 10, order 50
+    pol = client.put(
+        "/api/inventory/policies",
+        headers=admin_auth["headers"],
+        json={
+            "item_id": item.id,
+            "reorder_point": 10,
+            "safety_stock": 5,
+            "reorder_qty": 50,
+            "preferred_supplier_id": sup.id,
+        },
+    )
+    assert pol.status_code == 200, pol.text
+
+    suggest = client.get(
+        "/api/inventory/reorder-suggestions",
+        headers=admin_auth["headers"],
+    ).json()
+    assert any(s["item_id"] == item.id for s in suggest)
+
+    auto = client.post(
+        "/api/inventory/auto-purchase-orders",
+        headers=admin_auth["headers"],
+    ).json()
+    assert len(auto["created"]) == 1
+    po = db_session.query(PurchaseOrder).filter(
+        PurchaseOrder.id == auto["created"][0]["po_id"]
+    ).first()
+    assert po is not None
+    assert po.supplier_id == sup.id
+    assert len(po.items) == 1
+
+
+def test_dashboard_runs_widgets(client, admin_auth, db_session):
+    """Dashboard runs all its widget queries and returns aggregated data."""
+    from app.modules.report_builder.models import ReportDefinition
+    from app.modules.inventory.models import Item
+
+    # Seed report definition: count of items
+    db_session.add(Item(sku="DASH-1", name="대시품목", stock_qty=Decimal("0")))
+    db_session.add(Item(sku="DASH-2", name="대시품목2", stock_qty=Decimal("0")))
+    db_session.commit()
+    import json as _json
+    rd = ReportDefinition(
+        code="rd-count", name="품목 카운트",
+        spec=_json.dumps({
+            "data_source": "items",
+            "columns": [{"agg": "count", "column": "id", "alias": "n"}],
+        }),
+        is_public=True,
+    )
+    db_session.add(rd)
+    db_session.commit()
+
+    dash = client.post(
+        "/api/dashboards",
+        headers=admin_auth["headers"],
+        json={
+            "code": "dash-1",
+            "name": "운영 대시보드",
+            "is_public": True,
+            "widgets": [
+                {"report_definition_id": rd.id, "title": "품목수", "position": 0,
+                 "chart_type": "kpi"},
+            ],
+        },
+    )
+    assert dash.status_code == 200, dash.text
+    did = dash.json()["id"]
+
+    run = client.get(f"/api/dashboards/{did}/run", headers=admin_auth["headers"])
+    assert run.status_code == 200
+    body = run.json()
+    assert len(body["widgets"]) == 1
+    assert "data" in body["widgets"][0]
+    assert body["widgets"][0]["data"]["rows"][0]["n"] >= 2
+
+
+def test_approval_escalate_overdue(client, admin_auth, db_session):
+    """An overdue step with escalate_to_id reassigns to that user via cron."""
+    from datetime import datetime, timedelta
+    from app.core.security import hash_password
+    from app.modules.approvals.models import ApprovalRequest, ApprovalStep, ApprovalStatus
+    from app.modules.auth.models import Role, User
+
+    boss = User(email="boss@x.com", full_name="Boss",
+                hashed_password=hash_password("test1234"), role=Role.manager)
+    backup = User(email="backup@x.com", full_name="Backup",
+                   hashed_password=hash_password("test1234"), role=Role.manager)
+    db_session.add_all([boss, backup])
+    db_session.flush()
+
+    req = ApprovalRequest(
+        title="overdue test", resource_type="po", resource_id=1, requester_id=boss.id,
+    )
+    req.steps.append(ApprovalStep(
+        order=1, approver_id=boss.id, sla_hours=4,
+        due_at=datetime.utcnow() - timedelta(hours=1),  # overdue
+        escalate_to_id=backup.id,
+    ))
+    db_session.add(req)
+    db_session.commit()
+
+    res = client.post(
+        "/api/approvals/escalate-overdue",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200
+    assert res.json()["escalated"] == 1
+    db_session.refresh(req.steps[0])
+    assert req.steps[0].approver_id == backup.id
+    assert req.steps[0].escalated_at is not None
+
+
+def test_user_delegation(client, admin_auth, admin_user, db_session):
+    """A user can register a vacation delegate; self-delegation rejected."""
+    from datetime import datetime, timedelta
+    from app.core.security import hash_password
+    from app.modules.auth.models import Role, User
+
+    other = User(email="other@x.com", full_name="Other",
+                  hashed_password=hash_password("test1234"), role=Role.staff)
+    db_session.add(other)
+    db_session.commit()
+
+    res = client.post(
+        "/api/approvals/delegations",
+        headers=admin_auth["headers"],
+        json={
+            "delegate_id": other.id,
+            "starts_at": (datetime.utcnow() - timedelta(hours=1)).isoformat(),
+            "ends_at": (datetime.utcnow() + timedelta(hours=24)).isoformat(),
+            "note": "휴가",
+        },
+    )
+    assert res.status_code == 200, res.text
+
+    # Self-delegation rejected
+    bad = client.post(
+        "/api/approvals/delegations",
+        headers=admin_auth["headers"],
+        json={
+            "delegate_id": admin_user.id,
+            "starts_at": datetime.utcnow().isoformat(),
+            "ends_at": (datetime.utcnow() + timedelta(hours=1)).isoformat(),
+        },
+    )
+    assert bad.status_code == 400
+
+
+def test_dsr_create_and_complete(client, admin_auth, db_session):
+    """DSR lifecycle: create → admin completes within PIPA 10-day window."""
+    res = client.post(
+        "/api/privacy/requests",
+        headers=admin_auth["headers"],
+        json={
+            "type": "access",
+            "subject_email": "user@example.com",
+            "description": "내 정보 열람 요청",
+        },
+    )
+    assert res.status_code == 200, res.text
+    req = res.json()
+    assert req["status"] == "pending"
+    assert req["due_at"] is not None  # PIPA deadline computed
+
+    cmp = client.post(
+        f"/api/privacy/requests/{req['id']}/complete?response_notes=완료됨",
+        headers=admin_auth["headers"],
+    )
+    assert cmp.status_code == 200
+    assert cmp.json()["status"] == "completed"
+
+
+def test_pii_redact_helper(client, admin_auth):
+    res = client.get(
+        "/api/privacy/redact-preview?email=hong.gildong@example.com&phone=010-1234-5678",
+        headers=admin_auth["headers"],
+    )
+    body = res.json()
+    assert body["email"].startswith("h") and body["email"].endswith("@example.com")
+    assert "*" in body["email"]
+    assert body["phone"].endswith("5678")
+
+
+def test_erase_user_anonymizes_pii(client, admin_auth, db_session):
+    """Erasure preserves the PK but rewrites PII to anonymized values."""
+    from app.core.security import hash_password
+    from app.modules.auth.models import Role, User
+    from app.modules.hr.models import Employee
+
+    u = User(email="erase@example.com", full_name="삭제대상",
+             hashed_password=hash_password("x"), role=Role.staff)
+    e = Employee(employee_no="ERASE-1", full_name="삭제대상",
+                 email="erase@example.com", salary=Decimal("3000000"))
+    db_session.add_all([u, e])
+    db_session.commit()
+    uid = u.id
+    eid = e.id
+
+    res = client.post(
+        "/api/privacy/erase-user?email=erase@example.com",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+
+    db_session.expire_all()
+    u2 = db_session.query(User).filter(User.id == uid).first()
+    e2 = db_session.query(Employee).filter(Employee.id == eid).first()
+    assert u2.full_name == "ERASED"
+    assert u2.is_active is False
+    assert "anonymized.local" in u2.email
+    assert e2.full_name == "ERASED"
+    assert "anonymized.local" in e2.email

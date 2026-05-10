@@ -74,5 +74,23 @@ class ApprovalStep(BaseEntity):
     )
     comment: Mapped[str | None] = mapped_column(String(1000))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # SLA + escalation
+    sla_hours: Mapped[int | None] = mapped_column(Integer)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    escalate_to_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    escalated_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     request: Mapped[ApprovalRequest] = relationship(back_populates="steps")
+
+
+class UserDelegation(BaseEntity):
+    """Out-of-office substitution: while active, all approval steps assigned
+    to `user_id` are auto-routed to `delegate_id`."""
+
+    __tablename__ = "user_delegations"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    delegate_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    starts_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    ends_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    note: Mapped[str | None] = mapped_column(String(500))
