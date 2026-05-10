@@ -37,6 +37,9 @@ MODULES = [
     "forecast",
     "suppliers",
     "edi",
+    "billing",
+    "manufacturing",
+    "report_builder",
 ]
 
 

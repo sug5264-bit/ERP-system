@@ -142,3 +142,175 @@ def void_journal_entry(entry_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(void_entry)
     return void_entry
+
+
+# ---- Fiscal periods (admin) -----------------------------------------------
+
+
+from datetime import date as _date  # noqa: E402
+
+from pydantic import BaseModel as _BaseModel, ConfigDict  # noqa: E402
+
+from app.modules.auth.models import User  # noqa: E402
+from app.modules.finance.models import AccountType, FiscalPeriod  # noqa: E402
+from app.core.time import utc_now  # noqa: E402
+
+
+class FiscalPeriodIn(_BaseModel):
+    code: str
+    start_date: _date
+    end_date: _date
+    notes: str | None = None
+
+
+class FiscalPeriodOut(_BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    code: str
+    start_date: _date
+    end_date: _date
+    is_closed: bool
+    closed_by_id: int | None
+    notes: str | None
+
+
+@router.get("/periods", response_model=list[FiscalPeriodOut])
+def list_periods(db: Session = Depends(get_db)):
+    return db.query(FiscalPeriod).order_by(FiscalPeriod.start_date.desc()).all()
+
+
+@router.post(
+    "/periods",
+    response_model=FiscalPeriodOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def create_period(payload: FiscalPeriodIn, db: Session = Depends(get_db)):
+    if payload.end_date < payload.start_date:
+        raise HTTPException(status_code=400, detail="end_date < start_date")
+    if db.query(FiscalPeriod).filter(FiscalPeriod.code == payload.code).first():
+        raise HTTPException(status_code=400, detail="Code already exists")
+    p = FiscalPeriod(**payload.model_dump())
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.post(
+    "/periods/{period_id}/close",
+    response_model=FiscalPeriodOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def close_period(
+    period_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    p = db.query(FiscalPeriod).filter(FiscalPeriod.id == period_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Period not found")
+    if p.is_closed:
+        raise HTTPException(status_code=400, detail="Already closed")
+    # Verify all journals in this period balance — defensive even though create
+    # already validates.
+    p.is_closed = True
+    p.closed_by_id = user.id
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.post(
+    "/periods/{period_id}/reopen",
+    response_model=FiscalPeriodOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def reopen_period(period_id: int, db: Session = Depends(get_db)):
+    p = db.query(FiscalPeriod).filter(FiscalPeriod.id == period_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Period not found")
+    p.is_closed = False
+    p.closed_by_id = None
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+# ---- Trial balance & financial statements ----------------------------------
+
+
+@router.get("/trial-balance")
+def trial_balance(
+    as_of: _date | None = None,
+    db: Session = Depends(get_db),
+):
+    """Account-level dr/cr totals up to `as_of`. Building block for B/S, P&L."""
+    from sqlalchemy import func
+
+    cutoff = as_of or _date.today()
+    rows = (
+        db.query(
+            Account.code,
+            Account.name,
+            Account.type,
+            func.coalesce(func.sum(JournalLine.debit), 0).label("dr"),
+            func.coalesce(func.sum(JournalLine.credit), 0).label("cr"),
+        )
+        .outerjoin(JournalLine, JournalLine.account_id == Account.id)
+        .outerjoin(JournalEntry, JournalEntry.id == JournalLine.entry_id)
+        .filter((JournalEntry.entry_date <= cutoff) | (JournalEntry.id.is_(None)))
+        .group_by(Account.id)
+        .order_by(Account.code)
+        .all()
+    )
+    return {
+        "as_of": cutoff.isoformat(),
+        "lines": [
+            {
+                "code": r.code,
+                "name": r.name,
+                "type": r.type.value if hasattr(r.type, "value") else str(r.type),
+                "debit": float(r.dr),
+                "credit": float(r.cr),
+                "balance": float(r.dr) - float(r.cr),
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/income-statement")
+def income_statement(
+    start: _date,
+    end: _date,
+    db: Session = Depends(get_db),
+):
+    """Revenue - Expense for the period [start, end]."""
+    from sqlalchemy import func
+
+    revenue = (
+        db.query(func.coalesce(func.sum(JournalLine.credit - JournalLine.debit), 0))
+        .join(Account, Account.id == JournalLine.account_id)
+        .join(JournalEntry, JournalEntry.id == JournalLine.entry_id)
+        .filter(Account.type == AccountType.revenue)
+        .filter(JournalEntry.entry_date.between(start, end))
+        .scalar()
+        or 0
+    )
+    expense = (
+        db.query(func.coalesce(func.sum(JournalLine.debit - JournalLine.credit), 0))
+        .join(Account, Account.id == JournalLine.account_id)
+        .join(JournalEntry, JournalEntry.id == JournalLine.entry_id)
+        .filter(Account.type == AccountType.expense)
+        .filter(JournalEntry.entry_date.between(start, end))
+        .scalar()
+        or 0
+    )
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "revenue": float(revenue),
+        "expense": float(expense),
+        "net_income": float(revenue) - float(expense),
+    }

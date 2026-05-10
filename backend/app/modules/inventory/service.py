@@ -2,8 +2,68 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.modules.inventory.models import Item, MovementType, StockLot, StockMovement
+from app.modules.inventory.models import (
+    Item,
+    MovementType,
+    StockLot,
+    StockMovement,
+    Warehouse,
+    WarehouseStock,
+)
 from app.modules.inventory.schemas import ItemCreate, StockLotIn, StockMovementCreate
+
+
+def _adjust_warehouse_stock(
+    db: Session,
+    item_id: int,
+    warehouse_id: int | None,
+    type_: MovementType,
+    qty: Decimal,
+    unit_cost: Decimal | None,
+) -> None:
+    """Update per-warehouse on-hand and the moving-average cost.
+
+    Skipped when no warehouse_id is given (legacy single-warehouse path).
+    """
+    if warehouse_id is None:
+        return
+    ws = (
+        db.query(WarehouseStock)
+        .filter(
+            WarehouseStock.item_id == item_id,
+            WarehouseStock.warehouse_id == warehouse_id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if not ws:
+        ws = WarehouseStock(
+            item_id=item_id,
+            warehouse_id=warehouse_id,
+            quantity=Decimal("0"),
+            avg_cost=Decimal("0"),
+        )
+        db.add(ws)
+        db.flush()
+
+    cur_qty = Decimal(ws.quantity)
+    cur_avg = Decimal(ws.avg_cost)
+
+    if type_ == MovementType.inbound:
+        cost = Decimal(unit_cost) if unit_cost is not None else cur_avg
+        new_qty = cur_qty + qty
+        if new_qty > 0:
+            ws.avg_cost = (cur_qty * cur_avg + qty * cost) / new_qty
+        ws.quantity = new_qty
+    elif type_ == MovementType.outbound:
+        if cur_qty < qty:
+            raise ValueError(
+                f"Insufficient stock at warehouse {warehouse_id}: {cur_qty} < {qty}"
+            )
+        ws.quantity = cur_qty - qty
+        # avg_cost unchanged on outbound
+    else:  # adjustment — set absolute
+        ws.quantity = qty
 
 
 def list_items(db: Session) -> list[Item]:
@@ -67,6 +127,16 @@ def create_movement(db: Session, payload: StockMovementCreate) -> StockMovement:
         item.stock_qty = qty
         if lot:
             lot.quantity = qty
+
+    # Per-warehouse stock + moving-average cost (no-op when warehouse_id is None)
+    _adjust_warehouse_stock(
+        db,
+        item_id=item.id,
+        warehouse_id=payload.warehouse_id,
+        type_=payload.type,
+        qty=qty,
+        unit_cost=payload.unit_cost,
+    )
 
     movement = StockMovement(**payload.model_dump())
     db.add(movement)

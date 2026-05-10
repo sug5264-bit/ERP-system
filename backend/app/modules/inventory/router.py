@@ -107,14 +107,34 @@ def create_lot(item_id: int, payload: StockLotIn, db: Session = Depends(get_db))
     response_model=ItemOut,
     dependencies=[Depends(require_role("admin"))],
 )
-def update_item(item_id: int, payload: ItemUpdate, db: Session = Depends(get_db)):
+def update_item(
+    item_id: int,
+    payload: ItemUpdate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    from app.modules.audit.diff import record_update, snapshot
+
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+    fields = ["sku", "name", "unit", "unit_price", "stock_qty"]
+    before = snapshot(item, fields)
     for k, v in payload.model_dump(exclude_unset=True).items():
         setattr(item, k, v)
     db.commit()
     db.refresh(item)
+    after = snapshot(item, fields)
+    record_update(
+        db,
+        resource_type="inv_items",
+        resource_id=item.id,
+        before=before,
+        after=after,
+        user_id=user.id,
+        user_email=user.email,
+        path=f"/api/inventory/items/{item.id}",
+    )
     return item
 
 
@@ -178,3 +198,47 @@ def delete_lot(lot_id: int, db: Session = Depends(get_db)):
     db.delete(lot)
     db.commit()
     return {"ok": True}
+
+
+# ---- Warehouses + per-warehouse stock --------------------------------------
+
+
+from app.modules.inventory.models import Warehouse, WarehouseStock  # noqa: E402
+from app.modules.inventory.schemas import (  # noqa: E402
+    WarehouseIn,
+    WarehouseOut,
+    WarehouseStockOut,
+)
+
+
+@router.get("/warehouses", response_model=list[WarehouseOut])
+def list_warehouses(db: Session = Depends(get_db)):
+    return db.query(Warehouse).order_by(Warehouse.code).all()
+
+
+@router.post(
+    "/warehouses",
+    response_model=WarehouseOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def create_warehouse(payload: WarehouseIn, db: Session = Depends(get_db)):
+    if db.query(Warehouse).filter(Warehouse.code == payload.code).first():
+        raise HTTPException(status_code=400, detail="Code already exists")
+    w = Warehouse(**payload.model_dump())
+    db.add(w)
+    db.commit()
+    db.refresh(w)
+    return w
+
+
+@router.get(
+    "/items/{item_id}/stock-by-warehouse",
+    response_model=list[WarehouseStockOut],
+)
+def stock_by_warehouse(item_id: int, db: Session = Depends(get_db)):
+    return (
+        db.query(WarehouseStock)
+        .filter(WarehouseStock.item_id == item_id)
+        .order_by(WarehouseStock.warehouse_id)
+        .all()
+    )

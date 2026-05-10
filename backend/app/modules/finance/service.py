@@ -3,8 +3,29 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.modules.finance.models import Account, JournalEntry, JournalLine
+from app.modules.finance.models import (
+    Account,
+    FiscalPeriod,
+    JournalEntry,
+    JournalLine,
+)
 from app.modules.finance.schemas import AccountCreate, JournalEntryCreate
+
+
+def check_period_open(db: Session, entry_date: date) -> None:
+    period = (
+        db.query(FiscalPeriod)
+        .filter(
+            FiscalPeriod.start_date <= entry_date,
+            FiscalPeriod.end_date >= entry_date,
+            FiscalPeriod.is_closed.is_(True),
+        )
+        .first()
+    )
+    if period:
+        raise ValueError(
+            f"회계기간 {period.code} 마감 상태 — {entry_date} 자 전표 입력 거부"
+        )
 
 
 def list_accounts(db: Session) -> list[Account]:
@@ -29,8 +50,10 @@ def create_journal_entry(db: Session, payload: JournalEntryCreate) -> JournalEnt
     if total_debit != total_credit:
         raise ValueError(f"Debits ({total_debit}) must equal credits ({total_credit})")
 
+    entry_date = payload.entry_date or date.today()
+    check_period_open(db, entry_date)
     entry = JournalEntry(
-        entry_date=payload.entry_date or date.today(),
+        entry_date=entry_date,
         description=payload.description,
         reference=payload.reference,
     )

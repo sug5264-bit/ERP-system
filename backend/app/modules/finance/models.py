@@ -1,7 +1,7 @@
 from datetime import date
 from enum import Enum as PyEnum
 
-from sqlalchemy import Date, Enum, ForeignKey, Numeric, String
+from sqlalchemy import Boolean, Date, Enum, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.base_model import BaseEntity
@@ -46,3 +46,18 @@ class JournalLine(BaseEntity):
 
     entry: Mapped[JournalEntry] = relationship(back_populates="lines")
     account: Mapped[Account] = relationship()
+
+
+class FiscalPeriod(BaseEntity):
+    """A bookkeeping period (typically a month). When `is_closed`, journal
+    entries dated within [start_date, end_date] are rejected."""
+
+    __tablename__ = "fin_fiscal_periods"
+    __table_args__ = (UniqueConstraint("code", name="uq_fiscal_period_code"),)
+
+    code: Mapped[str] = mapped_column(String(20), unique=True, index=True, nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    is_closed: Mapped[bool] = mapped_column(Boolean, default=False)
+    closed_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    notes: Mapped[str | None] = mapped_column(String(500))

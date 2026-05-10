@@ -28,6 +28,8 @@ class User(BaseEntity):
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     role: Mapped[Role] = mapped_column(Enum(Role), default=Role.staff, nullable=False)
+    totp_secret: Mapped[str | None] = mapped_column(String(64))
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
     module_permissions: Mapped[list["UserModulePermission"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"

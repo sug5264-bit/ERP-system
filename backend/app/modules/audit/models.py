@@ -14,3 +14,7 @@ class AuditLog(BaseEntity):
     status_code: Mapped[int] = mapped_column(Integer, nullable=False)
     ip: Mapped[str | None] = mapped_column(String(64))
     payload: Mapped[str | None] = mapped_column(Text)
+    # Field-level diff for update operations: JSON `{field: {before, after}}`.
+    diff: Mapped[str | None] = mapped_column(Text)
+    resource_type: Mapped[str | None] = mapped_column(String(50), index=True)
+    resource_id: Mapped[int | None] = mapped_column(Integer, index=True)

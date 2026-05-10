@@ -24,6 +24,31 @@ class Item(BaseEntity):
     stock_qty: Mapped[float] = mapped_column(Numeric(14, 3), default=0)
 
 
+class Warehouse(BaseEntity):
+    __tablename__ = "inv_warehouses"
+
+    code: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    location: Mapped[str | None] = mapped_column(String(500))
+
+
+class WarehouseStock(BaseEntity):
+    """Per-warehouse on-hand quantity + moving-average cost.
+
+    On inbound: avg_cost = (old_qty * old_avg + qty * unit_cost) / new_qty
+    On outbound / adjustment: avg_cost is unchanged (cost relieved at avg_cost).
+    """
+
+    __tablename__ = "inv_warehouse_stock"
+
+    item_id: Mapped[int] = mapped_column(ForeignKey("inv_items.id"), nullable=False, index=True)
+    warehouse_id: Mapped[int] = mapped_column(
+        ForeignKey("inv_warehouses.id"), nullable=False, index=True
+    )
+    quantity: Mapped[float] = mapped_column(Numeric(14, 3), default=0)
+    avg_cost: Mapped[float] = mapped_column(Numeric(14, 4), default=0)
+
+
 class StockLot(BaseEntity):
     __tablename__ = "inv_lots"
 
@@ -42,8 +67,10 @@ class StockMovement(BaseEntity):
 
     item_id: Mapped[int] = mapped_column(ForeignKey("inv_items.id"), nullable=False)
     lot_id: Mapped[int | None] = mapped_column(ForeignKey("inv_lots.id"))
+    warehouse_id: Mapped[int | None] = mapped_column(ForeignKey("inv_warehouses.id"))
     type: Mapped[MovementType] = mapped_column(Enum(MovementType), nullable=False)
     quantity: Mapped[float] = mapped_column(Numeric(14, 3), nullable=False)
+    unit_cost: Mapped[float] = mapped_column(Numeric(14, 4), default=0)
     moved_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     note: Mapped[str | None] = mapped_column(String(255))
 

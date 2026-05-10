@@ -52,11 +52,34 @@ class ItemOut(ItemBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class WarehouseIn(BaseModel):
+    code: str
+    name: str
+    location: str | None = None
+
+
+class WarehouseOut(WarehouseIn):
+    id: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WarehouseStockOut(BaseModel):
+    item_id: int
+    warehouse_id: int
+    quantity: Decimal
+    avg_cost: Decimal
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class StockMovementCreate(BaseModel):
     item_id: int
     lot_id: int | None = None
+    warehouse_id: int | None = None
     type: MovementType
     quantity: Decimal
+    unit_cost: Decimal | None = None  # required on inbound; ignored on others
     note: str | None = None
 
 
