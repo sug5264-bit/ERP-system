@@ -42,6 +42,9 @@ MODULES = [
     "report_builder",
     "assets",
     "crm",
+    "etax",
+    "projects",
+    "fx",
 ]
 
 

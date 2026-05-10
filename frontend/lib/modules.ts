@@ -11,6 +11,7 @@ export type ModuleDef = {
 export const MODULES: ModuleDef[] = [
   { key: "hr", labelKey: "nav.hr", href: "/hr" },
   { key: "payroll", labelKey: "nav.payroll", href: "/hr/payroll" },
+  { key: "attendance", labelKey: "nav.attendance", href: "/hr/attendance" },
   { key: "finance", labelKey: "nav.finance", href: "/finance" },
   { key: "periods", labelKey: "nav.periods", href: "/finance/periods", minRole: "manager" },
   { key: "inventory", labelKey: "nav.inventory", href: "/inventory" },
@@ -22,6 +23,7 @@ export const MODULES: ModuleDef[] = [
   { key: "matching", labelKey: "nav.matching", href: "/suppliers/matching" },
   { key: "crm", labelKey: "nav.crm", href: "/crm" },
   { key: "assets", labelKey: "nav.assets", href: "/assets" },
+  { key: "projects", labelKey: "nav.projects", href: "/projects" },
   { key: "reports", labelKey: "nav.reports", href: "/reports" },
 ];
 
@@ -80,6 +82,18 @@ export const ADMIN_MODULES: ModuleDef[] = [
     key: "admin-report-builder",
     labelKey: "nav.admin.reportBuilder",
     href: "/admin/reports",
+    minRole: "viewer",
+  },
+  {
+    key: "admin-etax",
+    labelKey: "nav.admin.etax",
+    href: "/admin/etax",
+    minRole: "manager",
+  },
+  {
+    key: "admin-fx",
+    labelKey: "nav.admin.fx",
+    href: "/admin/fx",
     minRole: "viewer",
   },
 ];

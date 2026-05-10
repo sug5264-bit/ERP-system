@@ -757,3 +757,157 @@ def test_three_way_matching_pass_and_reject(client, admin_auth, db_session):
     )
     assert rejected.json()["status"] == "rejected"
     assert "Total mismatch" in rejected.json()["match_notes"]
+
+
+# --- Phase 4: attendance, 4-insurances, etax, projects, fx -----------------
+
+
+def test_attendance_clock_in_out_and_overtime(client, admin_auth, db_session):
+    from app.modules.hr.models import Employee, Holiday
+
+    emp = Employee(employee_no="ATT-1", full_name="홍시계", email="hs@x.com",
+                   salary=Decimal("3000000"))
+    db_session.add(emp)
+    db_session.commit()
+
+    # Weekday: Wed 2026-05-06; 9:00 → 19:30 → 10.5h - 1h lunch = 9.5h, 1.5h overtime
+    res_in = client.post(
+        "/api/hr/attendance/clock-in",
+        headers=admin_auth["headers"],
+        json={"employee_id": emp.id, "date": "2026-05-06", "time": "09:00:00"},
+    )
+    assert res_in.status_code == 200
+    res_out = client.post(
+        "/api/hr/attendance/clock-out",
+        headers=admin_auth["headers"],
+        json={"employee_id": emp.id, "date": "2026-05-06", "time": "19:30:00"},
+    )
+    assert res_out.status_code == 200, res_out.text
+    body = res_out.json()
+    assert body["worked_minutes"] == 570  # 9.5h
+    assert body["overtime_minutes"] == 90  # 1.5h
+
+
+def test_payroll_includes_4_insurances(client, admin_auth, db_session):
+    from app.modules.hr.models import Employee
+
+    emp = Employee(employee_no="INS-1", full_name="박급여", email="pg@x.com",
+                   salary=Decimal("36000000"))  # 3M/month
+    db_session.add(emp)
+    db_session.commit()
+
+    res = client.post(
+        "/api/hr/payrolls",
+        headers=admin_auth["headers"],
+        json={
+            "employee_id": emp.id,
+            "period_code": "2026-05",
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # gross = 3,000,000; nps = 4.5% = 135,000; nhi = 3.545% ≈ 106,350
+    assert int(float(body["nps"])) == 135000
+    assert abs(int(float(body["nhi"])) - 106350) <= 1
+    assert int(float(body["ei"])) == 27000
+    # ltci = 12.95% of nhi
+    assert abs(int(float(body["ltci"])) - int(106350 * 0.1295)) <= 1
+
+
+def test_etax_submit_mock_accepts(client, admin_auth, db_session):
+    res = client.post(
+        "/api/etax",
+        headers=admin_auth["headers"],
+        json={
+            "type": "sales",
+            "issued_date": "2026-05-10",
+            "supplier_business_no": "1234567890",  # invalid checksum on purpose
+            "supplier_name": "공급사",
+            "buyer_business_no": "1234567890",
+            "buyer_name": "구매사",
+            "item_summary": "제품 외",
+            "subtotal": 1000,
+            "tax": 100,
+            "total": 1100,
+        },
+    )
+    assert res.status_code == 200
+    eid = res.json()["id"]
+    submit = client.post(f"/api/etax/{eid}/submit", headers=admin_auth["headers"])
+    # Mock adapter rejects bad business numbers
+    assert submit.status_code == 400
+
+
+def test_project_profitability(client, admin_auth, db_session):
+    from app.modules.hr.models import Employee
+    from app.modules.projects.models import Project, ProjectExpense, ProjectRevenue, Timesheet
+
+    proj = Project(code="P1", name="테스트 프로젝트", budget=Decimal("10000000"))
+    emp = Employee(employee_no="PJ-1", full_name="이프로", email="ip@x.com",
+                   salary=Decimal("3000000"))
+    db_session.add_all([proj, emp])
+    db_session.commit()
+
+    db_session.add(ProjectRevenue(project_id=proj.id, date=date(2026, 5, 1),
+                                   description="kickoff", amount=Decimal("5000000")))
+    db_session.add(ProjectExpense(project_id=proj.id, date=date(2026, 5, 2),
+                                   category="material", description="kit",
+                                   amount=Decimal("1000000")))
+    db_session.add(Timesheet(project_id=proj.id, employee_id=emp.id,
+                              date=date(2026, 5, 3), minutes=600,
+                              hourly_rate=Decimal("30000")))
+    db_session.commit()
+
+    res = client.get(
+        f"/api/projects/projects/{proj.id}/profitability",
+        headers=admin_auth["headers"],
+    )
+    body = res.json()
+    assert body["revenue"] == 5_000_000.0
+    # labor = 10h * 30,000 = 300,000
+    assert body["labor_cost"] == 300_000.0
+    assert body["expense_cost"] == 1_000_000.0
+    assert body["margin"] == 5_000_000 - 1_000_000 - 300_000
+
+
+def test_fx_rate_conversion(client, admin_auth, db_session):
+    # Add USD→KRW rate, convert
+    client.post(
+        "/api/fx/rates",
+        headers=admin_auth["headers"],
+        json={"date": "2026-05-01", "from_ccy": "USD", "to_ccy": "KRW", "rate": 1380.5},
+    )
+    conv = client.get(
+        "/api/fx/convert?amount=100&from_ccy=USD&to_ccy=KRW&as_of=2026-05-10",
+        headers=admin_auth["headers"],
+    )
+    assert conv.status_code == 200
+    assert conv.json()["result"] == 138050.0
+    # Reverse lookup
+    rev = client.get(
+        "/api/fx/convert?amount=138050&from_ccy=KRW&to_ccy=USD&as_of=2026-05-10",
+        headers=admin_auth["headers"],
+    )
+    assert rev.status_code == 200
+    assert abs(rev.json()["result"] - 100.0) < 0.5
+
+
+def test_fx_realized_diff(client, admin_auth, db_session):
+    # Booked at 1300, settled at 1400 → 100 USD gains 10,000 KRW
+    client.post(
+        "/api/fx/rates",
+        headers=admin_auth["headers"],
+        json={"date": "2026-04-01", "from_ccy": "USD", "to_ccy": "KRW", "rate": 1300},
+    )
+    client.post(
+        "/api/fx/rates",
+        headers=admin_auth["headers"],
+        json={"date": "2026-05-01", "from_ccy": "USD", "to_ccy": "KRW", "rate": 1400},
+    )
+    res = client.get(
+        "/api/fx/realized-diff?foreign_amount=100&foreign_ccy=USD"
+        "&booked_at=2026-04-15&settled_at=2026-05-15",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200
+    assert res.json()["realized_gain_loss"] == 10_000.0

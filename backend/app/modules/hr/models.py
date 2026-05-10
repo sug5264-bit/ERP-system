@@ -118,9 +118,33 @@ class Payroll(BaseEntity):
     bonus: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
     allowance: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
     deduction: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    # 4대보험 breakdown (employee share). `deduction` totals these.
+    nps: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))      # 국민연금
+    nhi: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))      # 건강보험
+    ltci: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))     # 장기요양
+    ei: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))       # 고용보험
     income_tax: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
     net_pay: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
     status: Mapped[PayrollStatus] = mapped_column(
         Enum(PayrollStatus), default=PayrollStatus.draft, nullable=False
     )
     paid_at: Mapped[date | None] = mapped_column(Date)
+
+
+class Attendance(BaseEntity):
+    """One row per (employee, date). Records clock_in/out and computed minutes."""
+
+    __tablename__ = "hr_attendance"
+    __table_args__ = (
+        UniqueConstraint("employee_id", "date", name="uq_attendance_emp_date"),
+    )
+
+    employee_id: Mapped[int] = mapped_column(
+        ForeignKey("hr_employees.id"), nullable=False, index=True
+    )
+    date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    clock_in: Mapped[str | None] = mapped_column(String(8))    # "HH:MM:SS"
+    clock_out: Mapped[str | None] = mapped_column(String(8))
+    worked_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    overtime_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    note: Mapped[str | None] = mapped_column(String(500))

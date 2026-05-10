@@ -342,6 +342,10 @@ class PayrollOut(_BaseModel):
     bonus: _D
     allowance: _D
     deduction: _D
+    nps: _D
+    nhi: _D
+    ltci: _D
+    ei: _D
     income_tax: _D
     net_pay: _D
     status: PayrollStatus
@@ -400,12 +404,19 @@ def create_payroll(payload: PayrollIn, db: Session = Depends(get_db)):
     base = payload.base_salary if payload.base_salary is not None else _D(emp.salary) / 12
     base = _D(base).quantize(_D("1"))
     gross = base + _D(payload.bonus) + _D(payload.allowance)
+
+    # Auto-compute 4대보험 (employee share) and add to deduction
+    from app.modules.hr.insurance import calculate_4_insurances
+
+    ins = calculate_4_insurances(gross)
+    deduction = _D(payload.deduction) + ins["total"]
+
     income_tax = (
         payload.income_tax
         if payload.income_tax is not None
-        else _korean_income_tax(gross - _D(payload.deduction))
+        else _korean_income_tax(gross - deduction)
     )
-    net = gross - _D(payload.deduction) - _D(income_tax)
+    net = gross - deduction - _D(income_tax)
 
     p = Payroll(
         employee_id=payload.employee_id,
@@ -413,7 +424,11 @@ def create_payroll(payload: PayrollIn, db: Session = Depends(get_db)):
         base_salary=base,
         bonus=payload.bonus,
         allowance=payload.allowance,
-        deduction=payload.deduction,
+        deduction=deduction,
+        nps=ins["nps"],
+        nhi=ins["nhi"],
+        ltci=ins["ltci"],
+        ei=ins["ei"],
         income_tax=income_tax,
         net_pay=net,
         status=PayrollStatus.draft,
@@ -569,3 +584,156 @@ def seed_korea_holidays(year: int, db: Session = Depends(get_db)):
         inserted += 1
     db.commit()
     return {"inserted": inserted, "year": year}
+
+
+# ---- Attendance -----------------------------------------------------------
+
+
+from datetime import datetime as _dt  # noqa: E402
+
+from app.modules.hr.models import Attendance  # noqa: E402
+
+
+def _hms_to_min(s: str | None) -> int | None:
+    if not s:
+        return None
+    try:
+        parts = s.split(":")
+        h, m = int(parts[0]), int(parts[1])
+        return h * 60 + m
+    except (ValueError, IndexError):
+        return None
+
+
+class AttendanceClockIn(_BaseModel):
+    employee_id: int
+    date: _date | None = None
+    time: str | None = None  # "HH:MM" or HH:MM:SS; default = now
+
+
+class AttendanceClockOut(_BaseModel):
+    employee_id: int
+    date: _date | None = None
+    time: str | None = None
+    note: str | None = None
+
+
+class AttendanceOut(_BaseModel):
+    id: int
+    employee_id: int
+    date: _date
+    clock_in: str | None
+    clock_out: str | None
+    worked_minutes: int
+    overtime_minutes: int
+    note: str | None
+    model_config = _Cfg(from_attributes=True)
+
+
+@router.get("/attendance", response_model=list[AttendanceOut])
+def list_attendance(
+    employee_id: int | None = None,
+    period: str | None = None,  # "YYYY-MM"
+    db: Session = Depends(get_db),
+):
+    q = db.query(Attendance)
+    if employee_id is not None:
+        q = q.filter(Attendance.employee_id == employee_id)
+    if period and len(period) == 7:
+        from datetime import date as _D2
+
+        try:
+            year, month = int(period[:4]), int(period[5:])
+        except ValueError:
+            raise HTTPException(status_code=400, detail="bad period")
+        if month == 12:
+            end = _D2(year + 1, 1, 1)
+        else:
+            end = _D2(year, month + 1, 1)
+        q = q.filter(Attendance.date >= _D2(year, month, 1), Attendance.date < end)
+    return q.order_by(Attendance.date.desc(), Attendance.employee_id).all()
+
+
+@router.post("/attendance/clock-in", response_model=AttendanceOut)
+def clock_in(payload: AttendanceClockIn, db: Session = Depends(get_db)):
+    today = payload.date or _date.today()
+    now_t = payload.time or _dt.now().strftime("%H:%M:%S")
+    row = (
+        db.query(Attendance)
+        .filter(Attendance.employee_id == payload.employee_id, Attendance.date == today)
+        .with_for_update()
+        .first()
+    )
+    if row:
+        if row.clock_in:
+            raise HTTPException(status_code=400, detail="Already clocked in today")
+        row.clock_in = now_t
+    else:
+        row = Attendance(
+            employee_id=payload.employee_id, date=today, clock_in=now_t
+        )
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.post("/attendance/clock-out", response_model=AttendanceOut)
+def clock_out(payload: AttendanceClockOut, db: Session = Depends(get_db)):
+    today = payload.date or _date.today()
+    now_t = payload.time or _dt.now().strftime("%H:%M:%S")
+    row = (
+        db.query(Attendance)
+        .filter(Attendance.employee_id == payload.employee_id, Attendance.date == today)
+        .with_for_update()
+        .first()
+    )
+    if not row or not row.clock_in:
+        raise HTTPException(status_code=400, detail="Clock in first")
+    row.clock_out = now_t
+    in_min = _hms_to_min(row.clock_in)
+    out_min = _hms_to_min(now_t)
+    if in_min is None or out_min is None or out_min < in_min:
+        raise HTTPException(status_code=400, detail="Invalid time range")
+    worked = out_min - in_min
+    # Subtract a 60-minute lunch break for shifts > 6h
+    if worked > 360:
+        worked -= 60
+    # Overtime: anything beyond 8h on weekday; full duration on weekend/holiday
+    is_weekend = today.weekday() >= 5
+    is_holiday = (
+        db.query(Holiday)
+        .filter(Holiday.date == today, Holiday.country == "KR")
+        .first()
+        is not None
+    )
+    if is_weekend or is_holiday:
+        overtime = worked
+    else:
+        overtime = max(0, worked - 480)
+    row.worked_minutes = worked
+    row.overtime_minutes = overtime
+    if payload.note:
+        row.note = payload.note
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.get("/attendance/summary")
+def attendance_summary(
+    employee_id: int,
+    period: str,  # "YYYY-MM"
+    db: Session = Depends(get_db),
+):
+    """Aggregate worked + overtime hours for the period."""
+    rows = list_attendance(employee_id=employee_id, period=period, db=db)
+    total = sum(r.worked_minutes for r in rows)
+    overtime = sum(r.overtime_minutes for r in rows)
+    return {
+        "employee_id": employee_id,
+        "period": period,
+        "days": len(rows),
+        "total_hours": round(total / 60, 2),
+        "overtime_hours": round(overtime / 60, 2),
+    }
