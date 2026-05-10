@@ -30,6 +30,9 @@ class User(BaseEntity):
     role: Mapped[Role] = mapped_column(Enum(Role), default=Role.staff, nullable=False)
     totp_secret: Mapped[str | None] = mapped_column(String(64))
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Last-accepted TOTP counter (= unix_time // 30). Used to reject replay of
+    # the same code within its valid window.
+    totp_last_counter: Mapped[int | None] = mapped_column(Integer)
 
     module_permissions: Mapped[list["UserModulePermission"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"

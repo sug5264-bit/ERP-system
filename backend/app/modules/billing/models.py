@@ -5,6 +5,7 @@ An Invoice is generated from a confirmed SalesOrder (or directly).
 A Payment is recorded against one or more invoices.
 """
 from datetime import date
+from decimal import Decimal
 from enum import Enum as PyEnum
 
 from sqlalchemy import Date, Enum, ForeignKey, Numeric, String
@@ -42,7 +43,7 @@ class Quote(BaseEntity):
     status: Mapped[QuoteStatus] = mapped_column(
         Enum(QuoteStatus), default=QuoteStatus.draft, nullable=False
     )
-    total: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    total: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     notes: Mapped[str | None] = mapped_column(String(1000))
     converted_order_id: Mapped[int | None] = mapped_column(ForeignKey("sales_orders.id"))
 
@@ -58,8 +59,8 @@ class QuoteItem(BaseEntity):
         ForeignKey("billing_quotes.id"), nullable=False, index=True
     )
     item_id: Mapped[int] = mapped_column(ForeignKey("inv_items.id"), nullable=False)
-    quantity: Mapped[float] = mapped_column(Numeric(14, 3), nullable=False)
-    unit_price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
 
     quote: Mapped[Quote] = relationship(back_populates="items")
 
@@ -77,10 +78,10 @@ class Invoice(BaseEntity):
     status: Mapped[InvoiceStatus] = mapped_column(
         Enum(InvoiceStatus), default=InvoiceStatus.draft, nullable=False, index=True
     )
-    subtotal: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
-    tax: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
-    total: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
-    paid_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    subtotal: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
+    tax: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
+    total: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
+    paid_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     notes: Mapped[str | None] = mapped_column(String(1000))
 
     items: Mapped[list["InvoiceItem"]] = relationship(
@@ -96,9 +97,9 @@ class InvoiceItem(BaseEntity):
     )
     description: Mapped[str] = mapped_column(String(500), nullable=False)
     item_id: Mapped[int | None] = mapped_column(ForeignKey("inv_items.id"))
-    quantity: Mapped[float] = mapped_column(Numeric(14, 3), nullable=False)
-    unit_price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
-    line_total: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    line_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
 
     invoice: Mapped[Invoice] = relationship(back_populates="items")
 
@@ -110,7 +111,7 @@ class Payment(BaseEntity):
         ForeignKey("billing_invoices.id"), nullable=False, index=True
     )
     paid_at: Mapped[date] = mapped_column(Date, default=date.today)
-    amount: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     method: Mapped[str] = mapped_column(String(50), default="bank_transfer")
     reference: Mapped[str | None] = mapped_column(String(200))
     notes: Mapped[str | None] = mapped_column(String(500))

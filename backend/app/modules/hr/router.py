@@ -249,7 +249,8 @@ def approve_leave(
     if req.status != LeaveStatus.pending:
         raise HTTPException(status_code=400, detail=f"Already {req.status.value}")
 
-    # Decrement balance (creating a row if needed)
+    # Decrement balance (creating a row if needed). Lock so concurrent
+    # approvals for the same employee+year+type serialize on used_days.
     bal = (
         db.query(LeaveBalance)
         .filter(
@@ -257,6 +258,7 @@ def approve_leave(
             LeaveBalance.year == req.start_date.year,
             LeaveBalance.type == req.type,
         )
+        .with_for_update()
         .first()
     )
     if not bal:
@@ -416,7 +418,12 @@ def create_payroll(payload: PayrollIn, db: Session = Depends(get_db)):
     dependencies=[Depends(require_role("admin"))],
 )
 def issue_payroll(pid: int, db: Session = Depends(get_db)):
-    p = db.query(Payroll).filter(Payroll.id == pid).first()
+    p = (
+        db.query(Payroll)
+        .filter(Payroll.id == pid)
+        .with_for_update()
+        .first()
+    )
     if not p:
         raise HTTPException(status_code=404, detail="Not found")
     if p.status != PayrollStatus.draft:
@@ -433,9 +440,18 @@ def issue_payroll(pid: int, db: Session = Depends(get_db)):
     dependencies=[Depends(require_role("admin"))],
 )
 def mark_paid(pid: int, db: Session = Depends(get_db)):
-    p = db.query(Payroll).filter(Payroll.id == pid).first()
+    p = (
+        db.query(Payroll)
+        .filter(Payroll.id == pid)
+        .with_for_update()
+        .first()
+    )
     if not p:
         raise HTTPException(status_code=404, detail="Not found")
+    if p.status == PayrollStatus.paid:
+        return p
+    if p.status != PayrollStatus.issued:
+        raise HTTPException(status_code=400, detail="Only issued payroll can be marked paid")
     p.status = PayrollStatus.paid
     p.paid_at = _date.today()
     db.commit()

@@ -302,7 +302,12 @@ def issue_invoice(invoice_id: int, db: Session = Depends(get_db)):
     dependencies=[Depends(require_role("admin"))],
 )
 def cancel_invoice(invoice_id: int, db: Session = Depends(get_db)):
-    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    inv = (
+        db.query(Invoice)
+        .filter(Invoice.id == invoice_id)
+        .with_for_update()
+        .first()
+    )
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
     if Decimal(inv.paid_amount) > 0:

@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 from enum import Enum as PyEnum
 
 from sqlalchemy import Boolean, Date, Enum, ForeignKey, Numeric, String, UniqueConstraint
@@ -40,8 +41,8 @@ class JournalLine(BaseEntity):
 
     entry_id: Mapped[int] = mapped_column(ForeignKey("fin_journal_entries.id"), nullable=False)
     account_id: Mapped[int] = mapped_column(ForeignKey("fin_accounts.id"), nullable=False)
-    debit: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
-    credit: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    debit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
+    credit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     memo: Mapped[str | None] = mapped_column(String(255))
 
     entry: Mapped[JournalEntry] = relationship(back_populates="lines")

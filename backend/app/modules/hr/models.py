@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 from enum import Enum as PyEnum
 
 from sqlalchemy import Date, Enum, ForeignKey, Integer, Numeric, String, UniqueConstraint
@@ -45,7 +46,7 @@ class Employee(BaseEntity):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     position: Mapped[str | None] = mapped_column(String(100))
     hire_date: Mapped[date] = mapped_column(Date, default=date.today)
-    salary: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+    salary: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
     department_id: Mapped[int | None] = mapped_column(ForeignKey("hr_departments.id"))
 
     department: Mapped[Department | None] = relationship(back_populates="employees")
@@ -60,7 +61,7 @@ class LeaveRequest(BaseEntity):
     type: Mapped[LeaveType] = mapped_column(Enum(LeaveType), nullable=False)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
-    days: Mapped[float] = mapped_column(Numeric(5, 1), nullable=False)
+    days: Mapped[Decimal] = mapped_column(Numeric(5, 1), nullable=False)
     reason: Mapped[str | None] = mapped_column(String(500))
     status: Mapped[LeaveStatus] = mapped_column(
         Enum(LeaveStatus), default=LeaveStatus.pending, nullable=False, index=True
@@ -82,8 +83,8 @@ class LeaveBalance(BaseEntity):
     )
     year: Mapped[int] = mapped_column(Integer, nullable=False)
     type: Mapped[LeaveType] = mapped_column(Enum(LeaveType), nullable=False)
-    entitled_days: Mapped[float] = mapped_column(Numeric(5, 1), default=15)
-    used_days: Mapped[float] = mapped_column(Numeric(5, 1), default=0)
+    entitled_days: Mapped[Decimal] = mapped_column(Numeric(5, 1), default=Decimal("15"))
+    used_days: Mapped[Decimal] = mapped_column(Numeric(5, 1), default=Decimal("0"))
 
 
 class Payroll(BaseEntity):
@@ -98,12 +99,12 @@ class Payroll(BaseEntity):
         ForeignKey("hr_employees.id"), nullable=False, index=True
     )
     period_code: Mapped[str] = mapped_column(String(7), nullable=False, index=True)  # "2026-05"
-    base_salary: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
-    bonus: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
-    allowance: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
-    deduction: Mapped[float] = mapped_column(Numeric(12, 2), default=0)  # 4대보험 등
-    income_tax: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
-    net_pay: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+    base_salary: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    bonus: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    allowance: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    deduction: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    income_tax: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    net_pay: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
     status: Mapped[PayrollStatus] = mapped_column(
         Enum(PayrollStatus), default=PayrollStatus.draft, nullable=False
     )

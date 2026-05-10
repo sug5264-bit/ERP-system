@@ -53,7 +53,9 @@ def _adjust_warehouse_stock(
         cost = Decimal(unit_cost) if unit_cost is not None else cur_avg
         new_qty = cur_qty + qty
         if new_qty > 0:
-            ws.avg_cost = (cur_qty * cur_avg + qty * cost) / new_qty
+            ws.avg_cost = ((cur_qty * cur_avg + qty * cost) / new_qty).quantize(
+                Decimal("0.0001")
+            )
         ws.quantity = new_qty
     elif type_ == MovementType.outbound:
         if cur_qty < qty:

@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from decimal import Decimal
 from enum import Enum as PyEnum
 
 from sqlalchemy import Date, DateTime, Enum, ForeignKey, Numeric, String
@@ -20,8 +21,8 @@ class Item(BaseEntity):
     sku: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     unit: Mapped[str] = mapped_column(String(20), default="EA")
-    unit_price: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
-    stock_qty: Mapped[float] = mapped_column(Numeric(14, 3), default=0)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    stock_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"))
 
 
 class Warehouse(BaseEntity):
@@ -45,8 +46,8 @@ class WarehouseStock(BaseEntity):
     warehouse_id: Mapped[int] = mapped_column(
         ForeignKey("inv_warehouses.id"), nullable=False, index=True
     )
-    quantity: Mapped[float] = mapped_column(Numeric(14, 3), default=0)
-    avg_cost: Mapped[float] = mapped_column(Numeric(14, 4), default=0)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"))
+    avg_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4), default=Decimal("0"))
 
 
 class StockLot(BaseEntity):
@@ -54,7 +55,7 @@ class StockLot(BaseEntity):
 
     item_id: Mapped[int] = mapped_column(ForeignKey("inv_items.id"), nullable=False, index=True)
     lot_number: Mapped[str] = mapped_column(String(100), nullable=False)
-    quantity: Mapped[float] = mapped_column(Numeric(14, 3), default=0)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"))
     expiry_date: Mapped[date | None] = mapped_column(Date)
     supplier: Mapped[str | None] = mapped_column(String(200))
     serial_number: Mapped[str | None] = mapped_column(String(200))
@@ -69,8 +70,8 @@ class StockMovement(BaseEntity):
     lot_id: Mapped[int | None] = mapped_column(ForeignKey("inv_lots.id"))
     warehouse_id: Mapped[int | None] = mapped_column(ForeignKey("inv_warehouses.id"))
     type: Mapped[MovementType] = mapped_column(Enum(MovementType), nullable=False)
-    quantity: Mapped[float] = mapped_column(Numeric(14, 3), nullable=False)
-    unit_cost: Mapped[float] = mapped_column(Numeric(14, 4), default=0)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4), default=Decimal("0"))
     moved_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     note: Mapped[str | None] = mapped_column(String(255))
 

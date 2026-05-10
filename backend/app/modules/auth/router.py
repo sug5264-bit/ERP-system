@@ -92,14 +92,34 @@ def login(
     if user.totp_enabled:
         # Form has `client_id` field reused for TOTP code (compatible with
         # OAuth2PasswordRequestForm). Clients should send code via that field.
+        import time as _time
+
         import pyotp
 
         code = (form.client_id or "").strip()
-        if not code or not pyotp.TOTP(user.totp_secret or "").verify(code, valid_window=1):
+        totp = pyotp.TOTP(user.totp_secret or "")
+        if not code or not totp.verify(code, valid_window=1):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="2FA code required",
             )
+        # Replay defense: each code is bound to a 30-second counter; reject
+        # any counter <= the last accepted one.
+        now_counter = int(_time.time()) // 30
+        # Probe ±1 to find which counter the supplied code matches.
+        matched = next(
+            (c for c in (now_counter, now_counter - 1, now_counter + 1) if totp.at(c) == code),
+            None,
+        )
+        if matched is None or (
+            user.totp_last_counter is not None and matched <= user.totp_last_counter
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="2FA code already used",
+            )
+        user.totp_last_counter = matched
+        db.commit()
     return _issue_tokens(db, user)
 
 

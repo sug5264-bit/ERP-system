@@ -159,7 +159,13 @@ def create_work_order(payload: WorkOrderIn, db: Session = Depends(get_db)):
     dependencies=[Depends(require_module_role("inventory", "manager"))],
 )
 def release_work_order(wo_id: int, db: Session = Depends(get_db)):
-    """Consume BOM components from stock (outbound movements)."""
+    """Consume BOM components from stock (outbound movements).
+
+    Pre-flight: lock the WO, BOM, and every component item, and verify each
+    has sufficient stock before issuing any movement. This prevents the
+    create_movement() loop from partially consuming inventory if a later
+    component is short.
+    """
     wo = db.query(WorkOrder).filter(WorkOrder.id == wo_id).with_for_update().first()
     if not wo:
         raise HTTPException(status_code=404, detail="WO not found")
@@ -169,17 +175,40 @@ def release_work_order(wo_id: int, db: Session = Depends(get_db)):
         db.query(BillOfMaterials)
         .options(selectinload(BillOfMaterials.components))
         .filter(BillOfMaterials.id == wo.bom_id)
+        .with_for_update()
         .first()
     )
-    units = Decimal(wo.quantity) / Decimal(bom.output_quantity)
-    for comp in bom.components:
+    units = (Decimal(wo.quantity) / Decimal(bom.output_quantity)).quantize(
+        Decimal("0.0001")
+    )
+
+    # Pre-flight: lock & verify each component's stock
+    from app.modules.inventory.models import Item
+
+    needs: list[tuple[int, Decimal]] = [
+        (c.component_item_id, Decimal(c.quantity_per) * units) for c in bom.components
+    ]
+    for item_id, qty in needs:
+        item = (
+            db.query(Item).filter(Item.id == item_id).with_for_update().first()
+        )
+        if not item:
+            raise HTTPException(status_code=404, detail=f"Component item {item_id} not found")
+        if Decimal(item.stock_qty) < qty:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient stock for item {item_id}: {item.stock_qty} < {qty}",
+            )
+
+    # All checks passed; now consume.
+    for item_id, qty in needs:
         try:
             create_movement(
                 db,
                 StockMovementCreate(
-                    item_id=comp.component_item_id,
+                    item_id=item_id,
                     type=MovementType.outbound,
-                    quantity=Decimal(comp.quantity_per) * units,
+                    quantity=qty,
                     note=f"WO {wo.wo_no} consume",
                 ),
             )
@@ -204,16 +233,24 @@ def complete_work_order(wo_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="WO not found")
     if wo.status != WorkOrderStatus.in_progress:
         raise HTTPException(status_code=400, detail=f"Cannot complete {wo.status.value}")
-    bom = db.query(BillOfMaterials).filter(BillOfMaterials.id == wo.bom_id).first()
-    create_movement(
-        db,
-        StockMovementCreate(
-            item_id=bom.finished_item_id,
-            type=MovementType.inbound,
-            quantity=wo.quantity,
-            note=f"WO {wo.wo_no} produce",
-        ),
+    bom = (
+        db.query(BillOfMaterials)
+        .filter(BillOfMaterials.id == wo.bom_id)
+        .with_for_update()
+        .first()
     )
+    try:
+        create_movement(
+            db,
+            StockMovementCreate(
+                item_id=bom.finished_item_id,
+                type=MovementType.inbound,
+                quantity=wo.quantity,
+                note=f"WO {wo.wo_no} produce",
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     wo.status = WorkOrderStatus.completed
     wo.completed_at = datetime.utcnow()
     db.commit()

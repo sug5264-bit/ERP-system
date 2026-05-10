@@ -118,11 +118,24 @@ def void_journal_entry(entry_id: int, db: Session = Depends(get_db)):
     from app.modules.finance.models import JournalEntry as _JE
     from app.modules.finance.models import JournalLine as _JL
 
-    src = db.query(_JE).filter(_JE.id == entry_id).first()
+    src = (
+        db.query(_JE)
+        .filter(_JE.id == entry_id)
+        .with_for_update()
+        .first()
+    )
     if not src:
         raise HTTPException(status_code=404, detail="Journal entry not found")
     if (src.reference or "").startswith("VOID-"):
         raise HTTPException(status_code=400, detail="Already a voiding entry")
+    # Prevent re-voiding the same source entry within a race window
+    from app.modules.finance.models import JournalEntry as _JE2  # noqa: E402
+    if (
+        db.query(_JE2)
+        .filter(_JE2.reference == f"VOID-{src.id}")
+        .first()
+    ):
+        raise HTTPException(status_code=400, detail="Already voided")
 
     void_entry = _JE(
         entry_date=_date.today(),
