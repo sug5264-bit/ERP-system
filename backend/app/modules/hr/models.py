@@ -87,6 +87,21 @@ class LeaveBalance(BaseEntity):
     used_days: Mapped[Decimal] = mapped_column(Numeric(5, 1), default=Decimal("0"))
 
 
+class Holiday(BaseEntity):
+    """Public/company holidays. Excluded from leave business-day calculations.
+
+    `country` is reserved for future multi-region support — for now defaults
+    to "KR".
+    """
+
+    __tablename__ = "hr_holidays"
+    __table_args__ = (UniqueConstraint("date", "country", name="uq_holiday_date_country"),)
+
+    date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    country: Mapped[str] = mapped_column(String(8), default="KR", nullable=False)
+
+
 class Payroll(BaseEntity):
     """A monthly payroll for one employee (period code = YYYY-MM)."""
 

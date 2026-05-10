@@ -203,3 +203,72 @@ def adjust_stock_for_sale(db: Session, item_id: int, quantity: Decimal) -> None:
             note="Sales order",
         ),
     )
+
+
+def consume_fefo(
+    db: Session,
+    item_id: int,
+    quantity: Decimal,
+    note: str = "FEFO outbound",
+) -> list[StockMovement]:
+    """Consume `quantity` of `item_id` from lots in First-Expire-First-Out order.
+
+    Lots without expiry_date are used last. Returns the list of movements
+    issued (one per lot touched). Raises ValueError if stock is insufficient.
+    """
+    from sqlalchemy import nullslast
+
+    lots = (
+        db.query(StockLot)
+        .filter(StockLot.item_id == item_id, StockLot.quantity > 0)
+        .order_by(nullslast(StockLot.expiry_date.asc()), StockLot.id)
+        .with_for_update()
+        .all()
+    )
+    available = sum((Decimal(lot.quantity) for lot in lots), Decimal("0"))
+    if available < quantity:
+        raise ValueError(
+            f"Insufficient lot stock for item {item_id}: have {available}, need {quantity}"
+        )
+
+    remaining = quantity
+    movements: list[StockMovement] = []
+    for lot in lots:
+        if remaining <= 0:
+            break
+        take = min(Decimal(lot.quantity), remaining)
+        movements.append(
+            create_movement(
+                db,
+                StockMovementCreate(
+                    item_id=item_id,
+                    lot_id=lot.id,
+                    type=MovementType.outbound,
+                    quantity=take,
+                    note=f"{note} lot={lot.lot_number}",
+                ),
+            )
+        )
+        remaining -= take
+    return movements
+
+
+def expiring_lots(
+    db: Session, *, within_days: int = 30, item_id: int | None = None
+) -> list[StockLot]:
+    """Return active lots expiring within `within_days`. Sorted soonest-first."""
+    from datetime import date as _date, timedelta
+
+    cutoff = _date.today() + timedelta(days=within_days)
+    q = (
+        db.query(StockLot)
+        .filter(
+            StockLot.quantity > 0,
+            StockLot.expiry_date.is_not(None),
+            StockLot.expiry_date <= cutoff,
+        )
+        .order_by(StockLot.expiry_date.asc())
+    )
+    if item_id is not None:
+        q = q.filter(StockLot.item_id == item_id)
+    return q.all()

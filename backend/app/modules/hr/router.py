@@ -185,13 +185,25 @@ class LeaveDecisionIn(_BaseModel):
     comment: str | None = None
 
 
-def _business_days(start: _date, end: _date) -> int:
+def _business_days(start: _date, end: _date, db: Session | None = None) -> int:
+    """Count weekdays in [start, end] excluding Saturdays, Sundays, and any
+    Korean public holiday rows registered in `hr_holidays`."""
     if end < start:
         return 0
+    holiday_dates: set[_date] = set()
+    if db is not None:
+        from app.modules.hr.models import Holiday  # noqa: E402
+
+        rows = (
+            db.query(Holiday.date)
+            .filter(Holiday.date >= start, Holiday.date <= end)
+            .all()
+        )
+        holiday_dates = {r[0] for r in rows}
     days = 0
     cur = start
     while cur <= end:
-        if cur.weekday() < 5:
+        if cur.weekday() < 5 and cur not in holiday_dates:
             days += 1
         cur = _date.fromordinal(cur.toordinal() + 1)
     return days
@@ -215,7 +227,7 @@ def list_leave_requests(
 def submit_leave_request(payload: LeaveRequestIn, db: Session = Depends(get_db)):
     if payload.end_date < payload.start_date:
         raise HTTPException(status_code=400, detail="end_date < start_date")
-    days = _business_days(payload.start_date, payload.end_date)
+    days = _business_days(payload.start_date, payload.end_date, db=db)
     if days <= 0:
         raise HTTPException(status_code=400, detail="No business days in range")
     req = LeaveRequest(
@@ -457,3 +469,103 @@ def mark_paid(pid: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(p)
     return p
+
+
+# ---- Holidays --------------------------------------------------------------
+
+
+from app.modules.hr.models import Holiday  # noqa: E402
+
+
+class HolidayIn(_BaseModel):
+    date: _date
+    name: str
+    country: str = "KR"
+
+
+class HolidayOut(_BaseModel):
+    id: int
+    date: _date
+    name: str
+    country: str
+    model_config = _Cfg(from_attributes=True)
+
+
+@router.get("/holidays", response_model=list[HolidayOut])
+def list_holidays(
+    year: int | None = None,
+    country: str = "KR",
+    db: Session = Depends(get_db),
+):
+    q = db.query(Holiday).filter(Holiday.country == country)
+    if year is not None:
+        from datetime import date as _D
+
+        q = q.filter(Holiday.date >= _D(year, 1, 1), Holiday.date <= _D(year, 12, 31))
+    return q.order_by(Holiday.date).all()
+
+
+@router.post(
+    "/holidays",
+    response_model=HolidayOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def create_holiday(payload: HolidayIn, db: Session = Depends(get_db)):
+    if (
+        db.query(Holiday)
+        .filter(Holiday.date == payload.date, Holiday.country == payload.country)
+        .first()
+    ):
+        raise HTTPException(status_code=400, detail="Already exists")
+    h = Holiday(**payload.model_dump())
+    db.add(h)
+    db.commit()
+    db.refresh(h)
+    return h
+
+
+@router.delete(
+    "/holidays/{hid}",
+    dependencies=[Depends(require_role("admin"))],
+)
+def delete_holiday(hid: int, db: Session = Depends(get_db)):
+    h = db.query(Holiday).filter(Holiday.id == hid).first()
+    if not h:
+        raise HTTPException(status_code=404, detail="Not found")
+    db.delete(h)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post(
+    "/holidays/seed-korea",
+    dependencies=[Depends(require_role("admin"))],
+)
+def seed_korea_holidays(year: int, db: Session = Depends(get_db)):
+    """Insert the recurring Korean public holidays for the given year. Lunar
+    holidays (Seollal/Chuseok) need to be entered manually each year — only
+    the fixed-date set is auto-seeded here."""
+    from datetime import date as _D
+
+    fixed = [
+        (_D(year, 1, 1), "신정"),
+        (_D(year, 3, 1), "삼일절"),
+        (_D(year, 5, 5), "어린이날"),
+        (_D(year, 6, 6), "현충일"),
+        (_D(year, 8, 15), "광복절"),
+        (_D(year, 10, 3), "개천절"),
+        (_D(year, 10, 9), "한글날"),
+        (_D(year, 12, 25), "성탄절"),
+    ]
+    inserted = 0
+    for d, name in fixed:
+        if (
+            db.query(Holiday)
+            .filter(Holiday.date == d, Holiday.country == "KR")
+            .first()
+        ):
+            continue
+        db.add(Holiday(date=d, name=name, country="KR"))
+        inserted += 1
+    db.commit()
+    return {"inserted": inserted, "year": year}

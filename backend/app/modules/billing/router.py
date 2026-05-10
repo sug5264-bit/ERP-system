@@ -291,6 +291,16 @@ def issue_invoice(invoice_id: int, db: Session = Depends(get_db)):
     if inv.status != InvoiceStatus.draft:
         raise HTTPException(status_code=400, detail=f"Can only issue draft (got {inv.status.value})")
     inv.status = InvoiceStatus.issued
+    # Auto-post: Dr AR / Cr Revenue + VAT
+    try:
+        from app.modules.finance.auto_post import post_invoice_issued
+
+        post_invoice_issued(db, inv)
+    except Exception:
+        import logging
+        logging.getLogger("erp.billing").exception(
+            "auto-post failed for invoice %s — invoice still issued", inv.invoice_no
+        )
     db.commit()
     db.refresh(inv)
     return inv
@@ -371,6 +381,17 @@ def record_payment(payload: PaymentIn, db: Session = Depends(get_db)):
     inv.status = (
         InvoiceStatus.paid if new_paid == Decimal(inv.total) else InvoiceStatus.partially_paid
     )
+    db.flush()  # so payment.id is available for the auto-post reference
+    # Auto-post: Dr Cash / Cr AR
+    try:
+        from app.modules.finance.auto_post import post_payment_received
+
+        post_payment_received(db, p)
+    except Exception:
+        import logging
+        logging.getLogger("erp.billing").exception(
+            "auto-post failed for payment %s — payment still recorded", p.id
+        )
     db.commit()
     db.refresh(p)
     return p

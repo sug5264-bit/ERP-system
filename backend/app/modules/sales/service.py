@@ -104,11 +104,39 @@ def confirm_order(db: Session, order_id: int) -> SalesOrder | None:
                 f"Insufficient stock for {item.sku}: have {item.stock_qty}, need {qty}"
             )
 
-    # All checks passed — now apply the movements.
+    # All checks passed — now apply the movements and accumulate cost.
+    total_cost = Decimal("0")
+    from app.modules.inventory.models import WarehouseStock
+
     for line in order.items:
+        # Approximate COGS at the item's first warehouse avg_cost (if any).
+        ws = (
+            db.query(WarehouseStock)
+            .filter(WarehouseStock.item_id == line.item_id)
+            .order_by(WarehouseStock.id)
+            .first()
+        )
+        if ws is not None:
+            total_cost += Decimal(ws.avg_cost) * Decimal(line.quantity)
         inventory_service.adjust_stock_for_sale(db, line.item_id, Decimal(line.quantity))
 
     order.status = OrderStatus.confirmed
+    db.flush()
+
+    # Best-effort COGS posting (Dr COGS / Cr Inventory)
+    if total_cost > 0:
+        try:
+            from app.modules.finance.auto_post import post_cogs
+
+            post_cogs(db, order_no=order.order_no, cost=total_cost)
+        except Exception:
+            import logging
+
+            logging.getLogger("erp.sales").exception(
+                "auto-post COGS failed for order %s — order still confirmed",
+                order.order_no,
+            )
+
     db.commit()
     db.refresh(order)
     return order

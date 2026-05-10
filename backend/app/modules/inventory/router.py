@@ -88,6 +88,61 @@ def list_lots(item_id: int, db: Session = Depends(get_db)):
 
 
 @router.post(
+    "/items/{item_id}/consume-fefo",
+    dependencies=[Depends(require_module_role("inventory", "staff"))],
+)
+def consume_fefo(
+    item_id: int,
+    quantity: float,
+    note: str = "FEFO outbound",
+    db: Session = Depends(get_db),
+):
+    """Consume from lots in First-Expire-First-Out order.
+
+    Lots with the earliest expiry_date are used first; lots without an expiry
+    date are used last. Critical for F&B compliance.
+    """
+    from decimal import Decimal as _D
+
+    try:
+        movements = service.consume_fefo(db, item_id, _D(str(quantity)), note=note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "consumed": sum((float(m.quantity) for m in movements), 0.0),
+        "movements": [
+            {
+                "id": m.id,
+                "lot_id": m.lot_id,
+                "quantity": float(m.quantity),
+            }
+            for m in movements
+        ],
+    }
+
+
+@router.get("/lots/expiring")
+def list_expiring_lots(
+    within_days: int = 30,
+    item_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Lots expiring within `within_days` (default 30). Sorted soonest-first."""
+    rows = service.expiring_lots(db, within_days=within_days, item_id=item_id)
+    return [
+        {
+            "id": r.id,
+            "item_id": r.item_id,
+            "lot_number": r.lot_number,
+            "quantity": float(r.quantity),
+            "expiry_date": r.expiry_date.isoformat() if r.expiry_date else None,
+            "supplier": r.supplier,
+        }
+        for r in rows
+    ]
+
+
+@router.post(
     "/items/{item_id}/lots",
     response_model=StockLotOut,
     dependencies=[Depends(require_module_role("inventory", "staff"))],

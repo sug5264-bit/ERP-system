@@ -433,3 +433,165 @@ def test_audit_diff_captures_field_changes(client, admin_auth, db_session):
     d = _json.loads(diff_row.diff)
     assert d["name"]["before"] == "원래"
     assert d["name"]["after"] == "변경됨"
+
+
+# --- Phase 2: holidays, auto-post, FEFO ------------------------------------
+
+
+def test_holidays_excluded_from_business_days(client, admin_auth, db_session):
+    """Leave request crossing a registered holiday counts fewer days."""
+    from app.modules.hr.models import Holiday, Employee
+
+    emp = Employee(employee_no="EH-1", full_name="홍홀", email="hh@x.com", salary=Decimal("3000000"))
+    db_session.add(emp)
+    db_session.commit()
+
+    # Wed–Fri, 3 business days
+    start = date(2026, 5, 6)  # Wed
+    end = date(2026, 5, 8)    # Fri
+    res = client.post(
+        "/api/hr/leave-requests",
+        headers=admin_auth["headers"],
+        json={
+            "employee_id": emp.id,
+            "type": "annual",
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert float(res.json()["days"]) == 3.0
+
+    # Add 2026-05-07 (Thu) as a holiday and re-request → 2 days
+    db_session.add(Holiday(date=date(2026, 5, 7), name="테스트공휴일", country="KR"))
+    db_session.commit()
+    res2 = client.post(
+        "/api/hr/leave-requests",
+        headers=admin_auth["headers"],
+        json={
+            "employee_id": emp.id,
+            "type": "annual",
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+        },
+    )
+    assert res2.status_code == 200, res2.text
+    assert float(res2.json()["days"]) == 2.0
+
+
+def test_auto_post_invoice_and_payment(client, admin_auth, db_session):
+    """Issuing an invoice posts AR/Revenue/VAT; recording payment posts Cash/AR."""
+    from app.modules.finance.models import Account, AccountType, JournalEntry
+    from app.modules.sales.models import Customer
+
+    # Set up CoA matching auto_post defaults
+    accounts = [
+        Account(code="1100", name="현금", type=AccountType.asset),
+        Account(code="1200", name="매출채권", type=AccountType.asset),
+        Account(code="2150", name="부가세예수금", type=AccountType.liability),
+        Account(code="4100", name="매출", type=AccountType.revenue),
+    ]
+    for a in accounts:
+        db_session.add(a)
+    cust = Customer(name="ACME", email="a@x.com")
+    db_session.add(cust)
+    db_session.commit()
+
+    res = client.post(
+        "/api/billing/invoices",
+        headers=admin_auth["headers"],
+        json={
+            "invoice_no": "INV-AUTO-1",
+            "customer_id": cust.id,
+            "items": [{"description": "L1", "quantity": 1, "unit_price": 1000}],
+            "tax_rate": 0.10,
+        },
+    )
+    assert res.status_code == 200, res.text
+    inv = res.json()
+    issue = client.post(
+        f"/api/billing/invoices/{inv['id']}/issue",
+        headers=admin_auth["headers"],
+    )
+    assert issue.status_code == 200
+
+    # Verify the GL entry exists
+    je = (
+        db_session.query(JournalEntry)
+        .filter(JournalEntry.reference == f"INV-{inv['invoice_no']}")
+        .first()
+    )
+    assert je is not None
+    assert sum(float(l.debit) for l in je.lines) == 1100.0
+    assert sum(float(l.credit) for l in je.lines) == 1100.0
+
+    # Pay it
+    pay = client.post(
+        "/api/billing/payments",
+        headers=admin_auth["headers"],
+        json={"invoice_id": inv["id"], "amount": 1100},
+    )
+    assert pay.status_code == 200
+    pay_id = pay.json()["id"]
+    je2 = (
+        db_session.query(JournalEntry)
+        .filter(JournalEntry.reference == f"PAY-{pay_id}")
+        .first()
+    )
+    assert je2 is not None
+
+
+def test_fefo_consume_picks_earliest_expiry(client, admin_auth, db_session):
+    from app.modules.inventory.models import Item, StockLot
+
+    item = Item(sku="MILK-1", name="우유 1L", stock_qty=Decimal("0"))
+    db_session.add(item)
+    db_session.commit()
+    lot_late = StockLot(
+        item_id=item.id, lot_number="L-LATE",
+        quantity=Decimal("10"), expiry_date=date(2027, 1, 1),
+    )
+    lot_early = StockLot(
+        item_id=item.id, lot_number="L-EARLY",
+        quantity=Decimal("8"), expiry_date=date(2026, 6, 1),
+    )
+    db_session.add_all([lot_late, lot_early])
+    item.stock_qty = Decimal("18")
+    db_session.commit()
+
+    res = client.post(
+        f"/api/inventory/items/{item.id}/consume-fefo?quantity=10",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+    movs = res.json()["movements"]
+    # First 8 should come from the earlier-expiry lot
+    assert movs[0]["lot_id"] == lot_early.id
+    assert movs[0]["quantity"] == 8.0
+    assert movs[1]["lot_id"] == lot_late.id
+    assert movs[1]["quantity"] == 2.0
+
+
+def test_expiring_lots_endpoint(client, admin_auth, db_session):
+    from datetime import timedelta as _td
+    from app.modules.inventory.models import Item, StockLot
+
+    item = Item(sku="YOG-1", name="요거트", stock_qty=Decimal("5"))
+    db_session.add(item)
+    db_session.commit()
+    soon = date.today() + _td(days=10)
+    far = date.today() + _td(days=200)
+    db_session.add_all([
+        StockLot(item_id=item.id, lot_number="SOON", quantity=Decimal("3"), expiry_date=soon),
+        StockLot(item_id=item.id, lot_number="FAR", quantity=Decimal("2"), expiry_date=far),
+    ])
+    db_session.commit()
+
+    res = client.get(
+        "/api/inventory/lots/expiring?within_days=30",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200
+    rows = res.json()
+    nums = {r["lot_number"] for r in rows}
+    assert "SOON" in nums and "FAR" not in nums
