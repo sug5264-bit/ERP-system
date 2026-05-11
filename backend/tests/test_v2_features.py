@@ -3169,3 +3169,130 @@ def test_ai_posting_llm_unbalanced_falls_back(client, admin_auth, db_session):
     finally:
         ai_router.set_anthropic_client(None)
         os.environ.pop("ANTHROPIC_API_KEY", None)
+
+
+# --- Phase 15: F&B Recipe + HACCP -----------------------------------------
+
+
+def test_recipe_cost_calculation(client, admin_auth, db_session):
+    """Cost = sum(qty_g × (1 + waste/100) × unit_price/1000) / portions."""
+    from app.modules.inventory.models import Item
+
+    fg = Item(sku="FG-DISH", name="비빔밥", stock_qty=Decimal("0"))
+    rice = Item(sku="RICE", name="쌀", stock_qty=Decimal("100"),
+                unit_price=Decimal("3000"))  # per kg
+    meat = Item(sku="BEEF", name="소고기", stock_qty=Decimal("50"),
+                 unit_price=Decimal("30000"))
+    db_session.add_all([fg, rice, meat])
+    db_session.commit()
+
+    res = client.post(
+        "/api/fnb/recipes",
+        headers=admin_auth["headers"],
+        json={
+            "code": "R-BIBIM", "name": "비빔밥",
+            "finished_item_id": fg.id,
+            "portion_size_g": 400, "yield_portions": 1,
+            "ingredients": [
+                {"item_id": rice.id, "quantity_g": 200, "waste_pct": 0},
+                {"item_id": meat.id, "quantity_g": 80, "waste_pct": 20},
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
+    rid = res.json()["id"]
+
+    cost = client.get(
+        f"/api/fnb/recipes/{rid}/cost",
+        headers=admin_auth["headers"],
+    ).json()
+    # rice: 200g × 3000/1000 = 600 / meat: 80g × 1.2 × 30000/1000 = 2880
+    # total = 3480 per 1 portion
+    assert abs(cost["cost_per_portion"] - 3480) < 1
+
+
+def test_recipe_validates_waste_pct(client, admin_auth, db_session):
+    from app.modules.inventory.models import Item
+
+    item = Item(sku="W", name="w", stock_qty=Decimal("0"))
+    fg = Item(sku="WFG", name="wfg", stock_qty=Decimal("0"))
+    db_session.add_all([item, fg])
+    db_session.commit()
+
+    res = client.post(
+        "/api/fnb/recipes",
+        headers=admin_auth["headers"],
+        json={
+            "code": "R-BAD", "name": "x",
+            "finished_item_id": fg.id,
+            "ingredients": [
+                {"item_id": item.id, "quantity_g": 100, "waste_pct": 150},
+            ],
+        },
+    )
+    assert res.status_code == 400
+
+
+def test_haccp_plan_and_log_violation(client, admin_auth, db_session):
+    """CCP log out-of-limit requires corrective action."""
+    plan = client.post(
+        "/api/fnb/haccp/plans",
+        headers=admin_auth["headers"],
+        json={
+            "code": "HACCP-1",
+            "title": "조리 가열 관리",
+            "ccps": [
+                {
+                    "sequence": 10, "type": "cooking",
+                    "description": "중심온도 가열",
+                    "critical_limit_text": "≥ 75℃ 15초",
+                    "monitor_frequency": "매 배치",
+                    "corrective_action": "재가열 후 재측정",
+                },
+            ],
+        },
+    )
+    assert plan.status_code == 200, plan.text
+    ccp_id = plan.json()["ccps"][0]["id"]
+
+    # Pass
+    ok = client.post(
+        "/api/fnb/haccp/logs",
+        headers=admin_auth["headers"],
+        json={
+            "ccp_id": ccp_id, "measured_value": "78℃ 20초",
+            "is_within_limit": True,
+        },
+    )
+    assert ok.status_code == 200
+
+    # Out of limit without corrective_action → 400
+    bad = client.post(
+        "/api/fnb/haccp/logs",
+        headers=admin_auth["headers"],
+        json={
+            "ccp_id": ccp_id, "measured_value": "65℃",
+            "is_within_limit": False,
+        },
+    )
+    assert bad.status_code == 400
+
+    # Out of limit with corrective_action → ok
+    fix = client.post(
+        "/api/fnb/haccp/logs",
+        headers=admin_auth["headers"],
+        json={
+            "ccp_id": ccp_id, "measured_value": "65℃",
+            "is_within_limit": False,
+            "corrective_action_taken": "재가열 80℃까지",
+        },
+    )
+    assert fix.status_code == 200
+
+    # Filter violations
+    viol = client.get(
+        f"/api/fnb/haccp/logs?ccp_id={ccp_id}&only_violations=true",
+        headers=admin_auth["headers"],
+    ).json()
+    assert len(viol) == 1
+    assert viol[0]["corrective_action_taken"] == "재가열 80℃까지"

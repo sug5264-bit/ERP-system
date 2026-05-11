@@ -56,6 +56,7 @@ MODULES = [
     "compliance",
     "contracts",
     "lease",
+    "fnb",
 ]
 
 

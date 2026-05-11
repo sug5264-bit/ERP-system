@@ -20,6 +20,9 @@ export const MODULES: ModuleDef[] = [
   { key: "manufacturing", labelKey: "nav.manufacturing", href: "/manufacturing" },
   { key: "sales", labelKey: "nav.sales", href: "/sales" },
   { key: "billing", labelKey: "nav.billing", href: "/billing" },
+  { key: "contracts", labelKey: "nav.contracts", href: "/contracts", minRole: "manager" },
+  { key: "lease", labelKey: "nav.lease", href: "/finance/lease", minRole: "manager" },
+  { key: "qc", labelKey: "nav.qc", href: "/qc" },
   { key: "approvals", labelKey: "nav.approvals", href: "/approvals" },
   { key: "suppliers", labelKey: "nav.suppliers", href: "/suppliers" },
   { key: "matching", labelKey: "nav.matching", href: "/suppliers/matching" },
@@ -107,6 +110,12 @@ export const ADMIN_MODULES: ModuleDef[] = [
     key: "admin-privacy",
     labelKey: "nav.admin.privacy",
     href: "/admin/privacy",
+    minRole: "manager",
+  },
+  {
+    key: "admin-compliance",
+    labelKey: "nav.admin.compliance",
+    href: "/admin/compliance",
     minRole: "manager",
   },
 ];
