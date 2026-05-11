@@ -12,6 +12,7 @@ export const MODULES: ModuleDef[] = [
   { key: "hr", labelKey: "nav.hr", href: "/hr" },
   { key: "payroll", labelKey: "nav.payroll", href: "/hr/payroll" },
   { key: "attendance", labelKey: "nav.attendance", href: "/hr/attendance" },
+  { key: "ats", labelKey: "nav.ats", href: "/hr/ats" },
   { key: "finance", labelKey: "nav.finance", href: "/finance" },
   { key: "periods", labelKey: "nav.periods", href: "/finance/periods", minRole: "manager" },
   { key: "statements", labelKey: "nav.statements", href: "/finance/statements", minRole: "manager" },
@@ -29,6 +30,7 @@ export const MODULES: ModuleDef[] = [
   { key: "reorder", labelKey: "nav.reorder", href: "/inventory/reorder" },
   { key: "wms", labelKey: "nav.wms", href: "/wms" },
   { key: "dashboards", labelKey: "nav.dashboards", href: "/dashboards" },
+  { key: "kpi", labelKey: "nav.kpi", href: "/kpi" },
   { key: "reports", labelKey: "nav.reports", href: "/reports" },
 ];
 

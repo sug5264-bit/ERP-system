@@ -2206,3 +2206,203 @@ def test_celery_app_disabled_without_broker():
     from app.core.celery_app import celery_app
     # Test env doesn't set the broker, so it must be None.
     assert celery_app is None
+
+
+# --- Phase 10: ATS / KPI / Consolidation / AI posting ---------------------
+
+
+def test_ats_full_hire_flow(client, admin_auth, db_session):
+    """Posting → candidate → application → offer → hire creates Employee."""
+    from app.modules.hr.models import Department, Employee
+
+    dept = Department(name="개발")
+    db_session.add(dept)
+    db_session.commit()
+
+    job = client.post(
+        "/api/ats/jobs",
+        headers=admin_auth["headers"],
+        json={"code": "JOB-1", "title": "백엔드 개발자", "headcount": 1,
+              "department_id": dept.id},
+    )
+    assert job.status_code == 200, job.text
+    job_id = job.json()["id"]
+
+    cand = client.post(
+        "/api/ats/candidates",
+        headers=admin_auth["headers"],
+        json={"full_name": "신지원", "email": "newhire@x.com",
+              "source": "잡코리아"},
+    ).json()
+
+    app_res = client.post(
+        "/api/ats/applications",
+        headers=admin_auth["headers"],
+        json={"job_posting_id": job_id, "candidate_id": cand["id"]},
+    )
+    app_id = app_res.json()["id"]
+
+    # Stage through offer
+    for stage in ["screening", "interview", "offer"]:
+        client.post(
+            f"/api/ats/applications/{app_id}/move-stage",
+            headers=admin_auth["headers"],
+            json={"stage": stage},
+        )
+
+    # Hire
+    hire = client.post(
+        f"/api/ats/applications/{app_id}/hire",
+        headers=admin_auth["headers"],
+        json={"employee_no": "E-NEW-1", "salary": 36000000,
+              "department_id": dept.id, "position": "Backend Engineer"},
+    )
+    assert hire.status_code == 200, hire.text
+    assert hire.json()["stage"] == "hired"
+    emp_id = hire.json()["converted_employee_id"]
+    emp = db_session.query(Employee).filter(Employee.id == emp_id).first()
+    assert emp.email == "newhire@x.com"
+    assert emp.employee_no == "E-NEW-1"
+
+
+def test_ats_duplicate_application_rejected(client, admin_auth, db_session):
+    job = client.post(
+        "/api/ats/jobs",
+        headers=admin_auth["headers"],
+        json={"code": "JOB-DUP", "title": "x", "headcount": 1},
+    ).json()
+    cand = client.post(
+        "/api/ats/candidates",
+        headers=admin_auth["headers"],
+        json={"full_name": "dup", "email": "dup@x.com"},
+    ).json()
+    a1 = client.post(
+        "/api/ats/applications",
+        headers=admin_auth["headers"],
+        json={"job_posting_id": job["id"], "candidate_id": cand["id"]},
+    )
+    a2 = client.post(
+        "/api/ats/applications",
+        headers=admin_auth["headers"],
+        json={"job_posting_id": job["id"], "candidate_id": cand["id"]},
+    )
+    assert a1.status_code == 200
+    assert a2.status_code == 400
+
+
+def test_kpi_inventory_value(client, admin_auth, db_session):
+    """Inventory value KPI sums stock * unit_price across items."""
+    from app.modules.inventory.models import Item
+
+    db_session.add_all([
+        Item(sku="K-A", name="A", stock_qty=Decimal("10"),
+             unit_price=Decimal("100")),
+        Item(sku="K-B", name="B", stock_qty=Decimal("5"),
+             unit_price=Decimal("200")),
+    ])
+    db_session.commit()
+
+    res = client.get("/api/kpi/list", headers=admin_auth["headers"]).json()
+    codes = {k["code"] for k in res["kpis"]}
+    assert "inventory.value" in codes
+    assert "sales.total" in codes
+
+    run = client.get(
+        "/api/kpi/run/inventory.value", headers=admin_auth["headers"]
+    ).json()
+    assert run["value"] == 2000  # 10*100 + 5*200
+    assert len(run["breakdown"]) == 2
+
+
+def test_consolidation_eliminations_and_taxable_income(client, admin_auth, db_session):
+    from app.modules.finance.models import Account, AccountType, JournalEntry, JournalLine
+
+    # Setup: revenue 1000, expense 300 → book net 700
+    rev = Account(code="CONS-R", name="rev", type=AccountType.revenue)
+    exp = Account(code="CONS-E", name="exp", type=AccountType.expense)
+    cash = Account(code="CONS-C", name="cash", type=AccountType.asset)
+    db_session.add_all([rev, exp, cash])
+    db_session.flush()
+    e = JournalEntry(entry_date=date(2026, 4, 1), description="rev")
+    e.lines.append(JournalLine(account_id=cash.id, debit=1000, credit=0))
+    e.lines.append(JournalLine(account_id=rev.id, debit=0, credit=1000))
+    e2 = JournalEntry(entry_date=date(2026, 4, 5), description="exp")
+    e2.lines.append(JournalLine(account_id=exp.id, debit=300, credit=0))
+    e2.lines.append(JournalLine(account_id=cash.id, debit=0, credit=300))
+    db_session.add_all([e, e2])
+    db_session.commit()
+
+    # Tax adjustments: +100 addition, -50 subtraction
+    client.post(
+        "/api/consolidation/tax-adjustments",
+        headers=admin_auth["headers"],
+        json={"period_code": "2026-04", "description": "접대비 한도초과",
+              "amount": 100, "category": "permanent"},
+    )
+    client.post(
+        "/api/consolidation/tax-adjustments",
+        headers=admin_auth["headers"],
+        json={"period_code": "2026-04", "description": "비과세 이자수익",
+              "amount": -50, "category": "permanent"},
+    )
+
+    res = client.get(
+        "/api/consolidation/taxable-income?start=2026-04-01&end=2026-04-30",
+        headers=admin_auth["headers"],
+    ).json()
+    assert res["book_net_income"] == 700
+    assert res["additions"] == 100
+    assert res["subtractions"] == 50
+    assert res["taxable_income"] == 750  # 700 + 100 - 50
+
+
+def test_ai_posting_propose(client, admin_auth, db_session):
+    """Description matching a keyword produces a balanced 2-line proposal."""
+    from app.modules.finance.models import Account, AccountType
+
+    cash = Account(code="1100", name="현금", type=AccountType.asset)
+    travel = Account(code="5120", name="여비교통비", type=AccountType.expense)
+    db_session.add_all([cash, travel])
+    db_session.commit()
+
+    res = client.post(
+        "/api/ai-posting/propose",
+        headers=admin_auth["headers"],
+        json={"description": "출장 택시비 강남 →  김포", "amount": 30000},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["matched_rule"] in ("교통비", "택시")
+    assert body["confidence"] >= 0.5
+    debit_sum = sum(float(l["debit"]) for l in body["lines"])
+    credit_sum = sum(float(l["credit"]) for l in body["lines"])
+    assert debit_sum == credit_sum == 30000
+
+
+def test_ai_posting_accept_creates_journal(client, admin_auth, db_session):
+    """Accepting a proposal creates a real JournalEntry."""
+    from app.modules.finance.models import Account, AccountType, JournalEntry
+
+    db_session.add_all([
+        Account(code="1100", name="현금", type=AccountType.asset),
+        Account(code="5130", name="식대", type=AccountType.expense),
+    ])
+    db_session.commit()
+
+    prop = client.post(
+        "/api/ai-posting/propose",
+        headers=admin_auth["headers"],
+        json={"description": "회식 식대", "amount": 50000},
+    ).json()
+
+    accept = client.post(
+        "/api/ai-posting/accept",
+        headers=admin_auth["headers"],
+        params={"description": "회식 식대"},
+        json=prop,
+    )
+    assert accept.status_code == 200, accept.text
+    cnt = db_session.query(JournalEntry).filter(
+        JournalEntry.reference == "AI-PROP"
+    ).count()
+    assert cnt >= 1

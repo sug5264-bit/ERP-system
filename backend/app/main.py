@@ -48,6 +48,10 @@ MODULES = [
     "dashboards",
     "privacy",
     "wms",
+    "ats",
+    "kpi",
+    "consolidation",
+    "ai_posting",
 ]
 
 
