@@ -52,6 +52,7 @@ MODULES = [
     "kpi",
     "consolidation",
     "ai_posting",
+    "qc",
 ]
 
 

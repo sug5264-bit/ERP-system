@@ -2556,3 +2556,183 @@ def test_ai_posting_llm_falls_back_to_heuristic(client, admin_auth, db_session,
     body = res.json()
     # Heuristic match — matched_rule starts without "LLM:"
     assert not (body.get("matched_rule") or "").startswith("LLM:")
+
+
+# --- Phase 12: QC + GAAP labels + Mobile screens ---------------------------
+
+
+def test_qc_plan_and_inspection_pass(client, admin_auth, db_session):
+    """Plan with min/max criterion → measurement within range → pass result."""
+    plan = client.post(
+        "/api/qc/plans",
+        headers=admin_auth["headers"],
+        json={
+            "code": "INC-WEIGHT",
+            "name": "수입 중량 검사",
+            "stage": "incoming",
+            "criteria": [
+                {"name": "중량(kg)", "measurement_type": "numeric",
+                 "min_value": 9.5, "max_value": 10.5, "sequence": 10},
+            ],
+        },
+    )
+    assert plan.status_code == 200, plan.text
+    plan_id = plan.json()["id"]
+    crit_id = plan.json()["criteria"][0]["id"]
+
+    insp = client.post(
+        "/api/qc/inspections",
+        headers=admin_auth["headers"],
+        json={
+            "plan_id": plan_id,
+            "quantity_inspected": 100,
+            "measurements": [{"criterion_id": crit_id, "numeric_value": 10.0}],
+        },
+    )
+    assert insp.status_code == 200, insp.text
+    body = insp.json()
+    assert body["result"] == "pass"
+    assert float(body["quantity_passed"]) == 100
+
+
+def test_qc_inspection_fails_when_out_of_range(client, admin_auth, db_session):
+    plan = client.post(
+        "/api/qc/plans",
+        headers=admin_auth["headers"],
+        json={
+            "code": "FAIL-PLAN",
+            "name": "범위 초과 테스트",
+            "stage": "in_process",
+            "criteria": [
+                {"name": "온도(℃)", "measurement_type": "numeric",
+                 "min_value": 20, "max_value": 25},
+            ],
+        },
+    ).json()
+    crit_id = plan["criteria"][0]["id"]
+    insp = client.post(
+        "/api/qc/inspections",
+        headers=admin_auth["headers"],
+        json={
+            "plan_id": plan["id"],
+            "quantity_inspected": 50,
+            "measurements": [{"criterion_id": crit_id, "numeric_value": 30}],
+        },
+    )
+    assert insp.json()["result"] == "fail"
+    assert float(insp.json()["quantity_failed"]) == 50
+
+    # Rework
+    rework = client.post(
+        f"/api/qc/inspections/{insp.json()['id']}/rework",
+        headers=admin_auth["headers"],
+    )
+    assert rework.json()["result"] == "rework"
+
+
+def test_qc_defect_pareto(client, admin_auth, db_session):
+    """Defects are sorted by quantity, cumulative % is computed."""
+    plan = client.post(
+        "/api/qc/plans",
+        headers=admin_auth["headers"],
+        json={
+            "code": "DEF-PLAN", "name": "결함 추적",
+            "stage": "final",
+            "criteria": [{"name": "외관", "measurement_type": "boolean"}],
+        },
+    ).json()
+    crit_id = plan["criteria"][0]["id"]
+    insp = client.post(
+        "/api/qc/inspections",
+        headers=admin_auth["headers"],
+        json={
+            "plan_id": plan["id"], "quantity_inspected": 100,
+            "measurements": [{"criterion_id": crit_id, "boolean_value": False}],
+        },
+    ).json()
+
+    # Record 3 defects with different counts
+    for dt, qty in [("스크래치", 50), ("색상불량", 30), ("기타", 10)]:
+        client.post(
+            "/api/qc/defects",
+            headers=admin_auth["headers"],
+            json={"inspection_id": insp["id"], "defect_type": dt,
+                  "quantity": qty, "action": "scrap"},
+        )
+
+    pareto = client.get(
+        "/api/qc/defect-pareto?days=365",
+        headers=admin_auth["headers"],
+    ).json()
+    types = [d["defect_type"] for d in pareto["defects"]]
+    assert types == ["스크래치", "색상불량", "기타"]
+    # First entry covers 50/90 ≈ 55.6%
+    assert pareto["defects"][0]["cumulative_pct"] > 50
+
+
+def test_balance_sheet_renders_ifrs_labels(client, admin_auth, db_session):
+    """ifrs_label takes precedence when standard=ifrs."""
+    from app.modules.finance.models import Account, AccountType, JournalEntry, JournalLine
+
+    cash = Account(code="GAAP-1", name="현금", type=AccountType.asset,
+                   ifrs_label="Cash and cash equivalents")
+    cap = Account(code="GAAP-2", name="자본금", type=AccountType.equity,
+                  ifrs_label="Share capital")
+    db_session.add_all([cash, cap])
+    db_session.flush()
+    e = JournalEntry(entry_date=date(2026, 1, 1), description="seed")
+    e.lines.append(JournalLine(account_id=cash.id, debit=1000, credit=0))
+    e.lines.append(JournalLine(account_id=cap.id, debit=0, credit=1000))
+    db_session.add(e)
+    db_session.commit()
+
+    ifrs = client.get(
+        "/api/finance/balance-sheet/standard?as_of=2026-12-31&standard=ifrs",
+        headers=admin_auth["headers"],
+    ).json()
+    assert ifrs["standard"] == "ifrs"
+    asset_items = ifrs["assets"]["items"]
+    found = next((i for i in asset_items if i["code"] == "GAAP-1"), None)
+    assert found is not None
+    assert found["name"] == "Cash and cash equivalents"  # IFRS label used
+
+    # K-GAAP default — name unchanged
+    kgaap = client.get(
+        "/api/finance/balance-sheet/standard?as_of=2026-12-31&standard=kgaap",
+        headers=admin_auth["headers"],
+    ).json()
+    kg_item = next((i for i in kgaap["assets"]["items"] if i["code"] == "GAAP-1"), None)
+    assert kg_item["name"] == "현금"
+
+
+def test_qc_pass_rate(client, admin_auth, db_session):
+    """pass-rate endpoint aggregates by stage."""
+    # Re-uses previous test data; new plan + 2 inspections
+    plan = client.post(
+        "/api/qc/plans",
+        headers=admin_auth["headers"],
+        json={
+            "code": "PR-PLAN", "name": "pass-rate", "stage": "incoming",
+            "criteria": [{"name": "OK", "measurement_type": "boolean"}],
+        },
+    ).json()
+    crit_id = plan["criteria"][0]["id"]
+    client.post(
+        "/api/qc/inspections",
+        headers=admin_auth["headers"],
+        json={"plan_id": plan["id"], "quantity_inspected": 10,
+              "measurements": [{"criterion_id": crit_id, "boolean_value": True}]},
+    )
+    client.post(
+        "/api/qc/inspections",
+        headers=admin_auth["headers"],
+        json={"plan_id": plan["id"], "quantity_inspected": 10,
+              "measurements": [{"criterion_id": crit_id, "boolean_value": False}]},
+    )
+    res = client.get(
+        "/api/qc/pass-rate?stage=incoming&days=30",
+        headers=admin_auth["headers"],
+    ).json()
+    stages = {s["stage"]: s for s in res["stages"]}
+    assert "incoming" in stages
+    assert stages["incoming"]["total"] >= 2

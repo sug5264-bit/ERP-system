@@ -17,6 +17,9 @@ export default function RootLayout() {
         <Stack.Screen name="items" options={{ title: "재고" }} />
         <Stack.Screen name="orders" options={{ title: "주문" }} />
         <Stack.Screen name="movements" options={{ title: "재고 입출고" }} />
+        <Stack.Screen name="approvals" options={{ title: "결재" }} />
+        <Stack.Screen name="leads" options={{ title: "리드" }} />
+        <Stack.Screen name="scan" options={{ title: "바코드 스캔" }} />
       </Stack>
     </>
   );

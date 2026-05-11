@@ -67,6 +67,15 @@ export default function Dashboard() {
         <Pressable style={styles.btn} onPress={() => router.push("/orders")}>
           <Text style={styles.btnText}>🛒 주문</Text>
         </Pressable>
+        <Pressable style={styles.btn} onPress={() => router.push("/approvals")}>
+          <Text style={styles.btnText}>📝 결재 대기</Text>
+        </Pressable>
+        <Pressable style={styles.btn} onPress={() => router.push("/leads")}>
+          <Text style={styles.btnText}>📞 CRM 리드</Text>
+        </Pressable>
+        <Pressable style={styles.btn} onPress={() => router.push("/scan")}>
+          <Text style={styles.btnText}>🔍 바코드 스캔</Text>
+        </Pressable>
         <Pressable style={[styles.btn, styles.btnGhost]} onPress={logout}>
           <Text style={styles.btnGhostText}>로그아웃</Text>
         </Pressable>

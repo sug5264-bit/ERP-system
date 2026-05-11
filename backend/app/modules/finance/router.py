@@ -671,3 +671,69 @@ def vat_return_export(
         f"vat_return_{vat['period']['start']}_{vat['period']['end']}",
         format,
     )
+
+
+# ---- GAAP standard label rendering -----------------------------------------
+
+
+@router.get("/balance-sheet/standard")
+def balance_sheet_by_standard(
+    as_of: _date | None = None,
+    standard: str = "kgaap",  # kgaap | ifrs | us_gaap
+    db: Session = Depends(get_db),
+):
+    """Render balance sheet with account labels overridden by accounting
+    standard. Falls back to `Account.name` when no override exists."""
+    bs = balance_sheet(as_of=as_of, db=db)
+    if standard not in ("kgaap", "ifrs", "us_gaap"):
+        raise HTTPException(status_code=400, detail="standard must be kgaap|ifrs|us_gaap")
+
+    # Pre-load standard labels for all referenced codes
+    codes = {
+        it["code"]
+        for col in (bs["assets"]["items"], bs["liabilities"]["items"], bs["equity"]["items"])
+        for it in col
+    }
+    if not codes:
+        return {**bs, "standard": standard}
+    accs = db.query(Account).filter(Account.code.in_(codes)).all()
+    label_by_code = {
+        a.code: (
+            (a.ifrs_label if standard == "ifrs" else
+             a.us_gaap_label if standard == "us_gaap" else None)
+            or a.name
+        )
+        for a in accs
+    }
+    for col in (bs["assets"], bs["liabilities"], bs["equity"]):
+        for it in col["items"]:
+            it["name"] = label_by_code.get(it["code"], it["name"])
+
+    bs["standard"] = standard
+    return bs
+
+
+class AccountLabelIn(_BaseModel):
+    ifrs_label: str | None = None
+    us_gaap_label: str | None = None
+
+
+@router.patch(
+    "/accounts/{account_id}/labels",
+    response_model=AccountOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def update_account_labels(
+    account_id: int, payload: AccountLabelIn, db: Session = Depends(get_db)
+):
+    """Set per-standard display labels for an account (K-GAAP uses `name`)."""
+    acc = db.query(Account).filter(Account.id == account_id).first()
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if payload.ifrs_label is not None:
+        acc.ifrs_label = payload.ifrs_label or None
+    if payload.us_gaap_label is not None:
+        acc.us_gaap_label = payload.us_gaap_label or None
+    db.commit()
+    db.refresh(acc)
+    return acc

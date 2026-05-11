@@ -22,6 +22,9 @@ class Account(BaseEntity):
     code: Mapped[str] = mapped_column(String(20), unique=True, index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     type: Mapped[AccountType] = mapped_column(Enum(AccountType), nullable=False)
+    # Optional display labels per accounting standard. NULL → fall back to `name`.
+    ifrs_label: Mapped[str | None] = mapped_column(String(200))
+    us_gaap_label: Mapped[str | None] = mapped_column(String(200))
 
 
 class JournalEntry(BaseEntity):
