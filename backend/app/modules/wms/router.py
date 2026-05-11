@@ -220,6 +220,14 @@ def complete_picking(
         if upd.lot_id is not None:
             line.lot_id = upd.lot_id
 
+    # Reject an all-zero completion — a totally empty pick should be cancelled,
+    # not marked picked (would otherwise create empty shipments).
+    if not any(Decimal(l.picked_qty) > 0 for l in pl.items):
+        raise HTTPException(
+            status_code=400,
+            detail="No items were picked — cancel the pick list instead",
+        )
+
     pl.status = PickStatus.picked
     pl.completed_at = datetime.utcnow()
     db.commit()
@@ -347,6 +355,7 @@ def mark_returned(ship_id: int, db: Session = Depends(get_db)):
                 db,
                 StockMovementCreate(
                     item_id=line.item_id,
+                    lot_id=line.lot_id,  # preserve lot traceability on return
                     type=MovementType.inbound,
                     quantity=line.picked_qty,
                     note=f"Return from shipment {s.shipment_no}",

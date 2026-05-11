@@ -339,13 +339,17 @@ def mrp_run(period_code: str, db: Session = Depends(get_db)):
     """
     from app.modules.inventory.models import Item, ItemPolicy
 
-    # Wipe previous run for this period (idempotent)
+    # Wipe previous run for this period (idempotent). Bulk delete with
+    # synchronize_session=False so we issue a single SQL DELETE per table.
+    # Concurrency: a row-level lock on a sentinel marker would be cleaner, but
+    # the (period_code, item_id) unique constraints prevent duplicate inserts
+    # so the worst-case is a second runner failing on conflict — acceptable.
     db.query(MasterProductionSchedule).filter(
         MasterProductionSchedule.period_code == period_code
-    ).delete()
+    ).delete(synchronize_session=False)
     db.query(MaterialRequirement).filter(
         MaterialRequirement.period_code == period_code
-    ).delete()
+    ).delete(synchronize_session=False)
     db.flush()
 
     forecasts = (
@@ -359,6 +363,48 @@ def mrp_run(period_code: str, db: Session = Depends(get_db)):
 
     mps_rows: list[MasterProductionSchedule] = []
     component_demand: dict[int, Decimal] = {}
+
+    # Recursive multi-level BOM explosion. `_explode(item_id, qty, depth)`
+    # walks down sub-assemblies until each branch is a raw component (no
+    # active BOM). A depth limit guards against cyclic BOMs.
+    MAX_DEPTH = 16
+    bom_cache: dict[int, BillOfMaterials | None] = {}
+
+    def _active_bom(finished_id: int) -> BillOfMaterials | None:
+        if finished_id in bom_cache:
+            return bom_cache[finished_id]
+        b = (
+            db.query(BillOfMaterials)
+            .options(selectinload(BillOfMaterials.components))
+            .filter(
+                BillOfMaterials.finished_item_id == finished_id,
+                BillOfMaterials.is_active.is_(True),
+            )
+            .order_by(BillOfMaterials.id.desc())
+            .first()
+        )
+        bom_cache[finished_id] = b
+        return b
+
+    def _explode(item_id: int, qty: Decimal, depth: int, visiting: set[int]) -> None:
+        if depth > MAX_DEPTH or item_id in visiting:
+            return
+        bom = _active_bom(item_id)
+        if not bom:
+            # Leaf node — record raw demand
+            component_demand[item_id] = (
+                component_demand.get(item_id, Decimal("0")) + qty
+            )
+            return
+        units = (qty / Decimal(bom.output_quantity)).quantize(Decimal("0.0001"))
+        visiting = visiting | {item_id}
+        for comp in bom.components:
+            _explode(
+                comp.component_item_id,
+                Decimal(comp.quantity_per) * units,
+                depth + 1,
+                visiting,
+            )
 
     for f in forecasts:
         item = db.query(Item).filter(Item.id == f.item_id).first()
@@ -381,24 +427,17 @@ def mrp_run(period_code: str, db: Session = Depends(get_db)):
         db.add(mps)
         mps_rows.append(mps)
 
-        # Explode active BOM
-        bom = (
-            db.query(BillOfMaterials)
-            .options(selectinload(BillOfMaterials.components))
-            .filter(
-                BillOfMaterials.finished_item_id == f.item_id,
-                BillOfMaterials.is_active.is_(True),
-            )
-            .order_by(BillOfMaterials.id.desc())
-            .first()
-        )
+        # Walk active BOM recursively (multi-level explosion).
+        bom = _active_bom(f.item_id)
         if not bom:
             continue
         units = (net / Decimal(bom.output_quantity)).quantize(Decimal("0.0001"))
         for comp in bom.components:
-            need = Decimal(comp.quantity_per) * units
-            component_demand[comp.component_item_id] = (
-                component_demand.get(comp.component_item_id, Decimal("0")) + need
+            _explode(
+                comp.component_item_id,
+                Decimal(comp.quantity_per) * units,
+                depth=1,
+                visiting={f.item_id},
             )
 
     # Net components against on-hand

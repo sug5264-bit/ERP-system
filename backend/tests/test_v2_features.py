@@ -1881,3 +1881,175 @@ def test_barcode_scan_lookup_and_movement(client, admin_auth, db_session):
     assert move.status_code == 200, move.text
     db_session.refresh(item)
     assert Decimal(item.stock_qty) == Decimal("45")
+
+
+# --- Phase 9: bug fixes regression ---------------------------------------
+
+
+def test_campaign_sent_count_no_double_count(client, admin_auth, db_session):
+    """Re-sending a campaign doesn't inflate sent_count beyond actual sends."""
+    from app.modules.crm.models import Lead
+
+    db_session.add_all([
+        Lead(name="A", email="a@x.com", source="ref"),
+        Lead(name="B", email="b@x.com", source="ref"),
+    ])
+    db_session.commit()
+
+    seg = client.post(
+        "/api/crm/segments",
+        headers=admin_auth["headers"],
+        json={"name": "ref", "target_type": "lead", "criteria": {"source": "ref"}},
+    ).json()
+    camp = client.post(
+        "/api/crm/campaigns",
+        headers=admin_auth["headers"],
+        json={"name": "테스트", "segment_id": seg["id"], "subject": "x"},
+    ).json()
+    first = client.post(
+        f"/api/crm/campaigns/{camp['id']}/send", headers=admin_auth["headers"]
+    )
+    assert first.status_code == 200
+    assert first.json()["sent_count"] == 2
+
+
+def test_picking_rejects_all_zero(client, admin_auth, db_session):
+    """All-zero pick is rejected (can't ship nothing)."""
+    from app.modules.inventory.models import Item
+    from app.modules.sales.models import Customer, OrderStatus, SalesOrder, SalesOrderItem
+
+    item = Item(sku="WMS-Z", name="zero", stock_qty=Decimal("10"))
+    cust = Customer(name="zerocust")
+    db_session.add_all([item, cust])
+    db_session.flush()
+    so = SalesOrder(order_no="SO-WMS-Z", customer_id=cust.id,
+                    status=OrderStatus.confirmed, total=Decimal("0"))
+    so.items.append(SalesOrderItem(item_id=item.id, quantity=Decimal("3"),
+                                    unit_price=Decimal("10")))
+    db_session.add(so)
+    db_session.commit()
+
+    pl = client.post(f"/api/wms/pick-lists/from-order/{so.id}",
+                      headers=admin_auth["headers"]).json()
+    client.post(f"/api/wms/pick-lists/{pl['id']}/start",
+                 headers=admin_auth["headers"])
+    res = client.post(
+        f"/api/wms/pick-lists/{pl['id']}/complete",
+        headers=admin_auth["headers"],
+        json={"items": [{"item_id": item.id, "picked_qty": 0}]},
+    )
+    assert res.status_code == 400
+
+
+def test_mrp_multilevel_bom_explode(client, admin_auth, db_session):
+    """A multi-level BOM (FG → sub-assembly → raw) recurses correctly."""
+    from app.modules.inventory.models import Item
+    from app.modules.manufacturing.models import BillOfMaterials, BomComponent
+
+    fg = Item(sku="ML-FG", name="finished", stock_qty=Decimal("0"))
+    sub = Item(sku="ML-SUB", name="sub-assembly", stock_qty=Decimal("0"))
+    raw = Item(sku="ML-RAW", name="raw", stock_qty=Decimal("0"))
+    db_session.add_all([fg, sub, raw])
+    db_session.flush()
+    # FG uses 2 sub per output_qty=1
+    bom_fg = BillOfMaterials(finished_item_id=fg.id, version="v1",
+                              output_quantity=Decimal("1"), is_active=True)
+    bom_fg.components.append(BomComponent(component_item_id=sub.id,
+                                           quantity_per=Decimal("2")))
+    # Sub uses 3 raw per output_qty=1
+    bom_sub = BillOfMaterials(finished_item_id=sub.id, version="v1",
+                               output_quantity=Decimal("1"), is_active=True)
+    bom_sub.components.append(BomComponent(component_item_id=raw.id,
+                                            quantity_per=Decimal("3")))
+    db_session.add_all([bom_fg, bom_sub])
+    db_session.commit()
+
+    client.post("/api/manufacturing/forecasts",
+                 headers=admin_auth["headers"],
+                 json={"item_id": fg.id, "period_code": "2026-W22",
+                       "forecast_qty": 5})
+    client.post("/api/manufacturing/mrp-run?period_code=2026-W22",
+                 headers=admin_auth["headers"])
+    mrs = client.get(
+        "/api/manufacturing/material-requirements?period_code=2026-W22",
+        headers=admin_auth["headers"],
+    ).json()
+    # FG 5 → sub 10 → raw 30
+    by_item = {m["item_id"]: m for m in mrs}
+    # sub is not a leaf (it has its own BOM), so it shouldn't appear; only raw
+    assert raw.id in by_item
+    assert by_item[raw.id]["gross_required"] == 30
+    assert sub.id not in by_item  # exploded into raw, not surfaced as MR
+
+
+def test_wms_return_preserves_lot(client, admin_auth, db_session):
+    """Return restocks the same lot the original pick was associated with."""
+    from app.modules.inventory.models import Item, StockLot
+    from app.modules.sales.models import Customer, OrderStatus, SalesOrder, SalesOrderItem
+
+    item = Item(sku="LOT-RET", name="lot return", stock_qty=Decimal("0"))
+    cust = Customer(name="lotcust")
+    db_session.add_all([item, cust])
+    db_session.flush()
+    lot = StockLot(item_id=item.id, lot_number="L-A",
+                   quantity=Decimal("10"))
+    item.stock_qty = Decimal("10")
+    db_session.add(lot)
+    so = SalesOrder(order_no="SO-LOT-1", customer_id=cust.id,
+                    status=OrderStatus.confirmed, total=Decimal("0"))
+    so.items.append(SalesOrderItem(item_id=item.id, quantity=Decimal("4"),
+                                    unit_price=Decimal("0")))
+    db_session.add(so)
+    db_session.commit()
+
+    pl = client.post(f"/api/wms/pick-lists/from-order/{so.id}",
+                      headers=admin_auth["headers"]).json()
+    client.post(f"/api/wms/pick-lists/{pl['id']}/start",
+                 headers=admin_auth["headers"])
+    client.post(
+        f"/api/wms/pick-lists/{pl['id']}/complete",
+        headers=admin_auth["headers"],
+        json={"items": [{"item_id": item.id, "picked_qty": 4, "lot_id": lot.id}]},
+    )
+    sh = client.post("/api/wms/shipments", headers=admin_auth["headers"],
+                       json={"shipment_no": "SH-LOT-1",
+                             "pick_list_id": pl["id"]}).json()
+    client.post(f"/api/wms/shipments/{sh['id']}/ship",
+                 headers=admin_auth["headers"])
+    client.post(f"/api/wms/shipments/{sh['id']}/deliver",
+                 headers=admin_auth["headers"])
+
+    db_session.refresh(lot)
+    before = Decimal(lot.quantity)
+    client.post(f"/api/wms/shipments/{sh['id']}/return",
+                 headers=admin_auth["headers"])
+    db_session.refresh(lot)
+    # Return goes back to the SAME lot — quantity restored
+    assert Decimal(lot.quantity) == before + Decimal("4")
+
+
+def test_cash_flow_priority_revenue_over_asset(client, admin_auth, db_session):
+    """Mixed entry (revenue + asset contra) classifies as operating (revenue wins)."""
+    from app.modules.finance.models import Account, AccountType, JournalEntry, JournalLine
+
+    cash = Account(code="1100", name="현금", type=AccountType.asset)
+    other_asset = Account(code="CFP-A", name="비품", type=AccountType.asset)
+    rev = Account(code="CFP-R", name="매출", type=AccountType.revenue)
+    db_session.add_all([cash, other_asset, rev])
+    db_session.flush()
+    # Mixed: Dr cash 100, Cr revenue 80, Cr asset 20 (asset sold + service)
+    e = JournalEntry(entry_date=date(2026, 7, 1), description="mixed")
+    e.lines.append(JournalLine(account_id=cash.id, debit=100, credit=0))
+    e.lines.append(JournalLine(account_id=rev.id, debit=0, credit=80))
+    e.lines.append(JournalLine(account_id=other_asset.id, debit=0, credit=20))
+    db_session.add(e)
+    db_session.commit()
+
+    res = client.get(
+        "/api/finance/cash-flow?start=2026-07-01&end=2026-07-31",
+        headers=admin_auth["headers"],
+    )
+    body = res.json()
+    # Revenue contra wins priority → operating, not investing
+    assert body["operating"] == 100
+    assert body["investing"] == 0

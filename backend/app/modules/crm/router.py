@@ -430,10 +430,11 @@ def send_campaign(cid: int, db: Session = Depends(get_db)):
             campaign_id=c.id, recipient_email=email, recipient_id=rid,
             sent_at=now,
         ))
+    db.flush()  # surface pending CampaignSend inserts before counting
     c.sent_count = (
         db.query(CampaignSend)
         .filter(CampaignSend.campaign_id == c.id)
-        .count() + len(recipients)
+        .count()
     )
     c.sent_at = now
     c.status = CampaignStatus.sent

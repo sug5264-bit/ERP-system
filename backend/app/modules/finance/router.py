@@ -458,19 +458,32 @@ def cash_flow(
         .all()
     )
 
+    # Priority for mixed entries: revenue/expense → operating; non-cash asset →
+    # investing; liability/equity → financing. The highest-priority contra
+    # type wins so a single entry mixing types is classified by intent.
+    PRIORITY = {
+        AccountType.revenue: 3,
+        AccountType.expense: 3,
+        AccountType.asset: 2,
+        AccountType.liability: 1,
+        AccountType.equity: 1,
+    }
+
     operating = Decimal("0")
     investing = Decimal("0")
     financing = Decimal("0")
     for entry in entries:
         cash_delta = Decimal("0")
         contra_type: AccountType | None = None
+        best_priority = -1
         for line in entry.lines:
             if line.account_id in cash_account_ids:
                 cash_delta += Decimal(line.debit) - Decimal(line.credit)
             else:
                 acc = db.query(Account).filter(Account.id == line.account_id).first()
-                if acc and contra_type is None:
+                if acc and PRIORITY.get(acc.type, 0) > best_priority:
                     contra_type = acc.type
+                    best_priority = PRIORITY.get(acc.type, 0)
         if contra_type in (AccountType.revenue, AccountType.expense):
             operating += cash_delta
         elif contra_type == AccountType.asset:
@@ -503,7 +516,12 @@ def vat_return(
     매입세액 (input  VAT)  = sum of e-Tax purchase invoices' tax in [start, end]
     납부세액 = 매출세액 - 매입세액 (음수면 환급)
 
-    e-Tax invoices in `accepted` or `submitted` status only.
+    Status filter: `accepted` or `submitted` only. Intentionally excluded:
+      • `draft` — never sent to NTS, not counted.
+      • `cancelled` / `rejected` — voided. Cancellations that happened
+        in-period are netted by issuing a reversal e-Tax invoice with
+        negative amounts (Korean NTS convention), so they appear naturally
+        in the totals via the accepted reversal record.
     """
     from sqlalchemy import func
 
