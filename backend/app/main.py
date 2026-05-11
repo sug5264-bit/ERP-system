@@ -54,6 +54,8 @@ MODULES = [
     "ai_posting",
     "qc",
     "compliance",
+    "contracts",
+    "lease",
 ]
 
 

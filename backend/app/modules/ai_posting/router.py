@@ -19,6 +19,17 @@ router = APIRouter(
 )
 
 
+# Test hook: when set, _llm_propose uses this client instead of constructing
+# a real anthropic.Anthropic(). Lets unit tests inject a fake.
+_ANTHROPIC_CLIENT = None
+
+
+def set_anthropic_client(client) -> None:
+    """Test hook to inject a stub Anthropic client."""
+    global _ANTHROPIC_CLIENT
+    _ANTHROPIC_CLIENT = client
+
+
 # ---- Heuristic rules ------------------------------------------------------
 # Keyword → account-code mapping. First matching rule wins. Production should
 # replace this with an LLM-based classifier.
@@ -91,7 +102,13 @@ def _llm_propose(db: Session, description: str, amount: Decimal,
     back to the rule-based path.
     """
     import json as _json
-    import anthropic
+
+    # Only import the real SDK when we need to construct a fresh client.
+    # Tests inject _ANTHROPIC_CLIENT directly and avoid the dependency.
+    if _ANTHROPIC_CLIENT is None:
+        import anthropic
+    else:
+        anthropic = None  # not needed
 
     accounts = db.query(Account).order_by(Account.code).all()
     coa_text = "\n".join(
@@ -117,7 +134,7 @@ Respond ONLY with JSON in this exact shape:
 Each line must use codes from the chart. Debits must equal credits.
 """
 
-    client = anthropic.Anthropic()
+    client = _ANTHROPIC_CLIENT if _ANTHROPIC_CLIENT is not None else anthropic.Anthropic()
     msg = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=512,

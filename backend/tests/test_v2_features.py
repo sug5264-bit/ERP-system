@@ -2913,3 +2913,259 @@ def test_drip_completes_after_all_steps(client, admin_auth, db_session):
     )
     assert run.json()["sent_steps"] == 2
     assert run.json()["completed_enrollments"] == 1
+
+
+# --- Phase 14: notifications/contracts/lease/AI mock -----------------------
+
+
+def test_notifications_dispatch_no_op_when_unconfigured(client, admin_auth, db_session):
+    """Dispatch returns False for unconfigured channels without raising."""
+    res = client.post(
+        "/api/notifications/dispatch",
+        headers=admin_auth["headers"],
+        json={
+            "subject": "테스트", "body": "본문",
+            "channels": ["email", "slack"],
+            "recipients": ["test@x.com"],
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # No SMTP/Slack configured in test env → both False
+    assert body["results"]["email"] is False
+    assert body["results"]["slack"] is False
+
+
+def test_contract_lifecycle_and_renewals_due(client, admin_auth, db_session):
+    from datetime import timedelta as _td
+
+    today = date.today()
+    res = client.post(
+        "/api/contracts",
+        headers=admin_auth["headers"],
+        json={
+            "contract_no": "C-2026-1", "title": "유지보수 계약",
+            "type": "supplier", "counterparty": "메가IT",
+            "start_date": (today - _td(days=300)).isoformat(),
+            "end_date": (today + _td(days=30)).isoformat(),
+            "value": 12000000, "currency": "KRW",
+            "renewal": "manual", "notice_period_days": 60,
+        },
+    )
+    assert res.status_code == 200, res.text
+    cid = res.json()["id"]
+    client.post(f"/api/contracts/{cid}/activate", headers=admin_auth["headers"])
+
+    due = client.get(
+        "/api/contracts/renewals-due?within_days=60",
+        headers=admin_auth["headers"],
+    ).json()
+    found = next((c for c in due["contracts"] if c["id"] == cid), None)
+    assert found is not None
+    assert found["in_notice_window"] is True  # 30 days left, notice 60 days
+
+
+def test_contract_expire_overdue_auto_renew(client, admin_auth, db_session):
+    """Auto-renewal contracts past end_date roll forward without going expired."""
+    from datetime import timedelta as _td
+
+    today = date.today()
+    c = client.post(
+        "/api/contracts",
+        headers=admin_auth["headers"],
+        json={
+            "contract_no": "C-AUTO-1", "title": "자동 갱신",
+            "type": "customer", "counterparty": "ACME",
+            "start_date": (today - _td(days=365)).isoformat(),
+            "end_date": (today - _td(days=1)).isoformat(),
+            "renewal": "auto", "notice_period_days": 30,
+        },
+    ).json()
+    client.post(f"/api/contracts/{c['id']}/activate", headers=admin_auth["headers"])
+    res = client.post(
+        "/api/contracts/expire-overdue", headers=admin_auth["headers"]
+    ).json()
+    assert res["auto_renewed"] >= 1
+    # Manual contract from previous test should expire
+    # (only checks counters are non-negative)
+    assert res["expired"] >= 0
+
+
+def test_lease_activate_generates_schedule(client, admin_auth, db_session):
+    """Activating a lease computes PV and generates monthly schedule."""
+    res = client.post(
+        "/api/lease",
+        headers=admin_auth["headers"],
+        json={
+            "lease_no": "L-OFFICE-1",
+            "description": "사무실 임대",
+            "start_date": "2026-01-01",
+            "end_date": "2026-12-31",  # 12 months
+            "monthly_payment": 1000000,
+            "annual_discount_rate": 0.06,
+        },
+    )
+    assert res.status_code == 200, res.text
+    lid = res.json()["id"]
+
+    act = client.post(f"/api/lease/{lid}/activate", headers=admin_auth["headers"])
+    assert act.status_code == 200, act.text
+    body = act.json()
+    # PV of 1M for 12 months at 0.5%/month ≈ 11.6M (annuity formula)
+    assert 11_000_000 < float(body["lease_liability"]) < 12_000_000
+    assert float(body["rou_asset"]) == float(body["lease_liability"])
+
+    sched = client.get(
+        f"/api/lease/{lid}/schedule", headers=admin_auth["headers"]
+    ).json()
+    assert len(sched) == 12
+    # First period: interest > 0, closing < opening
+    assert sched[0]["interest_expense"] > 0
+    assert sched[0]["closing_liability"] < sched[0]["opening_liability"]
+    # Final period: closing ~ 0
+    assert abs(sched[-1]["closing_liability"]) < 5.0
+
+
+def test_lease_post_period_creates_journal(client, admin_auth, db_session):
+    from app.modules.finance.models import Account, AccountType, JournalEntry
+
+    # Required CoA for lease posting
+    for code, name, t in [
+        ("1100", "현금", AccountType.asset),
+        ("1500", "사용권자산", AccountType.asset),
+        ("1590", "사용권 감가누계", AccountType.asset),
+        ("2200", "리스부채", AccountType.liability),
+        ("5210", "이자비용", AccountType.expense),
+        ("5220", "사용권 상각비", AccountType.expense),
+    ]:
+        if not db_session.query(Account).filter(Account.code == code).first():
+            db_session.add(Account(code=code, name=name, type=t))
+    db_session.commit()
+
+    create = client.post(
+        "/api/lease",
+        headers=admin_auth["headers"],
+        json={
+            "lease_no": "L-POST-1",
+            "description": "포스팅 테스트",
+            "start_date": "2026-01-01",
+            "end_date": "2026-06-30",  # 6 months
+            "monthly_payment": 500000,
+            "annual_discount_rate": 0.04,
+        },
+    ).json()
+    client.post(f"/api/lease/{create['id']}/activate", headers=admin_auth["headers"])
+
+    post = client.post(
+        f"/api/lease/{create['id']}/post-period?period_code=2026-01",
+        headers=admin_auth["headers"],
+    )
+    assert post.status_code == 200, post.text
+    body = post.json()
+    assert body["journal_entry_id"] is not None
+
+    # Verify the JE balances
+    je = db_session.query(JournalEntry).filter(
+        JournalEntry.id == body["journal_entry_id"]
+    ).first()
+    dr = sum(float(l.debit) for l in je.lines)
+    cr = sum(float(l.credit) for l in je.lines)
+    assert abs(dr - cr) < 0.01
+
+    # Re-posting same period rejected
+    again = client.post(
+        f"/api/lease/{create['id']}/post-period?period_code=2026-01",
+        headers=admin_auth["headers"],
+    )
+    assert again.status_code == 400
+
+
+def test_ai_posting_llm_with_stub_client(client, admin_auth, db_session):
+    """Inject a fake Anthropic client and verify LLM path is used."""
+    import os
+    from app.modules.finance.models import Account, AccountType
+    from app.modules.ai_posting import router as ai_router
+
+    # Set up CoA
+    db_session.add_all([
+        Account(code="1100", name="현금", type=AccountType.asset),
+        Account(code="5140", name="임대료", type=AccountType.expense),
+    ])
+    db_session.commit()
+
+    # Stub client returning a perfectly balanced entry
+    class _StubContent:
+        def __init__(self, text): self.text = text
+
+    class _StubMsg:
+        def __init__(self, text): self.content = [_StubContent(text)]
+
+    class _StubMessages:
+        def create(self, **kwargs):
+            return _StubMsg(
+                '{"lines": ['
+                '{"account_code": "5140", "debit": 500000, "credit": 0},'
+                '{"account_code": "1100", "debit": 0, "credit": 500000}'
+                '], "confidence": 0.95, "rationale": "월세 결제"}'
+            )
+
+    class _StubAnthropic:
+        messages = _StubMessages()
+
+    ai_router.set_anthropic_client(_StubAnthropic())
+    os.environ["ANTHROPIC_API_KEY"] = "test-key"
+    try:
+        res = client.post(
+            "/api/ai-posting/propose",
+            headers=admin_auth["headers"],
+            json={"description": "월세 5월분", "amount": 500000},
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["matched_rule"].startswith("LLM:")
+        assert body["confidence"] >= 0.9
+        assert sum(float(l["debit"]) for l in body["lines"]) == 500000
+        assert sum(float(l["credit"]) for l in body["lines"]) == 500000
+    finally:
+        ai_router.set_anthropic_client(None)
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+
+
+def test_ai_posting_llm_unbalanced_falls_back(client, admin_auth, db_session):
+    """If the LLM returns an unbalanced entry the heuristic fallback kicks in."""
+    import os
+    from app.modules.finance.models import Account, AccountType
+    from app.modules.ai_posting import router as ai_router
+
+    db_session.add_all([
+        Account(code="1100", name="현금", type=AccountType.asset),
+        Account(code="5120", name="여비교통비", type=AccountType.expense),
+    ])
+    db_session.commit()
+
+    class _BadMessages:
+        def create(self, **kwargs):
+            class _M:
+                content = [type("X", (), {"text":
+                    '{"lines": [{"account_code": "1100", "debit": 100, "credit": 0}], '
+                    '"confidence": 0.9, "rationale": "broken"}'
+                })()]
+            return _M()
+
+    class _BadStub:
+        messages = _BadMessages()
+
+    ai_router.set_anthropic_client(_BadStub())
+    os.environ["ANTHROPIC_API_KEY"] = "test"
+    try:
+        res = client.post(
+            "/api/ai-posting/propose",
+            headers=admin_auth["headers"],
+            json={"description": "출장 택시", "amount": 30000},
+        )
+        body = res.json()
+        # Fell back to heuristic — rule matched "택시" rather than "LLM:"
+        assert not (body.get("matched_rule") or "").startswith("LLM:")
+    finally:
+        ai_router.set_anthropic_client(None)
+        os.environ.pop("ANTHROPIC_API_KEY", None)

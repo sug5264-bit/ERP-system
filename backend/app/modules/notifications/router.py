@@ -139,3 +139,52 @@ async def ws_notifications(websocket: WebSocket, token: str | None = None):
         pass
     finally:
         await manager.disconnect(user_id, websocket)
+
+
+# ---- Multi-channel dispatch ------------------------------------------------
+
+
+from pydantic import BaseModel as _BM_n  # noqa: E402
+
+from app.core.auth import require_role as _require_role_n  # noqa: E402
+from app.modules.notifications.channels import EmailAdapter, SlackAdapter  # noqa: E402
+
+
+class DispatchIn(_BM_n):
+    subject: str
+    body: str
+    channels: list[str] = ["email"]  # email|slack|ws
+    recipients: list[str] = []          # for email
+    user_ids: list[int] = []            # for websocket
+
+
+@router.post(
+    "/dispatch",
+    dependencies=[Depends(_require_role_n("manager"))],
+)
+async def dispatch(payload: DispatchIn):
+    """Send a notification through one or more channels at once.
+
+    Returns per-channel success flags. A no-op for any unconfigured channel.
+    """
+    results: dict[str, bool] = {}
+    if "email" in payload.channels:
+        results["email"] = EmailAdapter().send(
+            payload.subject, payload.body, payload.recipients
+        )
+    if "slack" in payload.channels:
+        results["slack"] = SlackAdapter().send(payload.subject, payload.body)
+    if "ws" in payload.channels:
+        sent = 0
+        for uid in payload.user_ids:
+            try:
+                await manager.send_to_user(uid, {
+                    "type": "notification",
+                    "subject": payload.subject,
+                    "body": payload.body,
+                })
+                sent += 1
+            except Exception:
+                pass
+        results["ws"] = sent > 0
+    return {"results": results}

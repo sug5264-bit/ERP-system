@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     celery_broker_url: str | None = None        # e.g. "redis://localhost:6379/0"
     celery_result_backend: str | None = None
 
+    # Slack incoming webhook (optional — multi-channel notifications)
+    slack_webhook_url: str | None = None
+
     # Rate limiting
     rate_limit_enabled: bool = True
     rate_limit_per_minute: int = 240
