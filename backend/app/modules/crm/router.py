@@ -462,3 +462,144 @@ def list_campaign_sends(cid: int, db: Session = Depends(get_db)):
         }
         for s in rows
     ]
+
+
+# ---- Drip Sequences -------------------------------------------------------
+
+
+from app.modules.crm.models import (  # noqa: E402
+    CampaignSequence,
+    SequenceEnrollment,
+    SequenceStatus,
+    SequenceStep,
+    TriggerType,
+)
+
+
+class StepIn(BaseModel):
+    delay_days: int = 0
+    subject: str
+    body: str = ""
+
+
+class SequenceIn(BaseModel):
+    name: str
+    description: str | None = None
+    trigger: TriggerType = TriggerType.manual
+    steps: list[StepIn] = []
+
+
+class SequenceOut(BaseModel):
+    id: int
+    name: str
+    description: str | None
+    trigger: TriggerType
+    status: SequenceStatus
+    steps: list[dict]
+    model_config = ConfigDict(from_attributes=True)
+
+
+def _seq_to_out(s: CampaignSequence) -> dict:
+    return {
+        "id": s.id, "name": s.name, "description": s.description,
+        "trigger": s.trigger.value, "status": s.status.value,
+        "steps": [
+            {"id": st.id, "delay_days": st.delay_days,
+             "subject": st.subject, "body": st.body}
+            for st in s.steps
+        ],
+    }
+
+
+@router.get("/sequences")
+def list_sequences(db: Session = Depends(get_db)):
+    from sqlalchemy.orm import selectinload as _sel
+
+    return [
+        _seq_to_out(s) for s in
+        db.query(CampaignSequence).options(_sel(CampaignSequence.steps)).all()
+    ]
+
+
+@router.post("/sequences")
+def create_sequence(payload: SequenceIn, db: Session = Depends(get_db)):
+    s = CampaignSequence(
+        name=payload.name, description=payload.description,
+        trigger=payload.trigger,
+    )
+    for st in payload.steps:
+        if st.delay_days < 0:
+            raise HTTPException(status_code=400, detail="delay_days must be >= 0")
+        s.steps.append(SequenceStep(**st.model_dump()))
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return _seq_to_out(s)
+
+
+@router.post("/sequences/{seq_id}/enroll")
+def enroll(seq_id: int, email: str, lead_id: int | None = None,
+             db: Session = Depends(get_db)):
+    if not db.query(CampaignSequence).filter(CampaignSequence.id == seq_id).first():
+        raise HTTPException(status_code=404, detail="Sequence not found")
+    if (
+        db.query(SequenceEnrollment)
+        .filter(
+            SequenceEnrollment.sequence_id == seq_id,
+            SequenceEnrollment.recipient_email == email,
+            SequenceEnrollment.completed_at.is_(None),
+        )
+        .first()
+    ):
+        raise HTTPException(status_code=400, detail="Already enrolled")
+    en = SequenceEnrollment(
+        sequence_id=seq_id, recipient_email=email,
+        recipient_lead_id=lead_id,
+    )
+    db.add(en)
+    db.commit()
+    db.refresh(en)
+    return {"id": en.id, "started_at": en.started_at.isoformat()}
+
+
+@router.post("/sequences/run-due")
+def run_due_sequence_steps(db: Session = Depends(get_db)):
+    """Cron entry: process pending steps. For each active enrollment, find
+    the next step whose delay_days has elapsed and 'send' it (mock SMTP)."""
+    from datetime import datetime as _dtnow
+    from sqlalchemy.orm import selectinload as _sel
+
+    now = _dtnow.utcnow()
+    enrollments = (
+        db.query(SequenceEnrollment)
+        .filter(SequenceEnrollment.completed_at.is_(None))
+        .all()
+    )
+    sent = 0
+    completed = 0
+    for en in enrollments:
+        seq = (
+            db.query(CampaignSequence)
+            .options(_sel(CampaignSequence.steps))
+            .filter(CampaignSequence.id == en.sequence_id)
+            .first()
+        )
+        if not seq or seq.status != SequenceStatus.active:
+            continue
+        steps = list(seq.steps)
+        elapsed = (now - en.started_at).total_seconds() / 86400
+        # Find the next un-sent step whose delay has elapsed
+        for idx, step in enumerate(steps):
+            if idx <= en.last_step_index:
+                continue
+            if step.delay_days > elapsed:
+                break
+            # Mock send — production hands off to SMTP/Celery
+            en.last_step_index = idx
+            sent += 1
+        if en.last_step_index >= len(steps) - 1:
+            en.completed_at = now
+            completed += 1
+    db.commit()
+    return {"sent_steps": sent, "completed_enrollments": completed,
+             "active_enrollments": len(enrollments) - completed}

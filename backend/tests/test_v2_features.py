@@ -2736,3 +2736,180 @@ def test_qc_pass_rate(client, admin_auth, db_session):
     stages = {s["stage"]: s for s in res["stages"]}
     assert "incoming" in stages
     assert stages["incoming"]["total"] >= 2
+
+
+# --- Phase 13: asset transfer/audit + compliance + drip sequences ---------
+
+
+def test_asset_transfer_and_audit_disposes_missing(client, admin_auth, db_session):
+    """Asset audit auto-disposes assets not found during physical count."""
+    from app.modules.hr.models import Employee
+    from app.modules.assets.models import Asset, AssetStatus
+
+    emp = Employee(employee_no="A1", full_name="custodian", email="c@x.com",
+                    salary=Decimal("3000000"))
+    db_session.add(emp)
+    db_session.commit()
+
+    # Create 2 assets
+    for i in range(2):
+        client.post(
+            "/api/assets/assets",
+            headers=admin_auth["headers"],
+            json={
+                "asset_no": f"FA-{i}", "name": f"노트북-{i}",
+                "acquired_date": "2026-01-01", "acquired_cost": 2000000,
+                "useful_life_months": 36,
+            },
+        )
+
+    # Transfer one
+    asset1 = db_session.query(Asset).filter(Asset.asset_no == "FA-0").first()
+    tr = client.post(
+        "/api/assets/transfers",
+        headers=admin_auth["headers"],
+        json={
+            "asset_id": asset1.id,
+            "to_custodian_id": emp.id,
+            "to_location": "본사 3F",
+            "reason": "신규 배정",
+        },
+    )
+    assert tr.status_code == 200, tr.text
+
+    # Start audit
+    audit = client.post(
+        "/api/assets/audits",
+        headers=admin_auth["headers"],
+        json={"code": "AUDIT-2026Q2"},
+    )
+    assert audit.status_code == 200
+    aid = audit.json()["id"]
+    assert audit.json()["expected_findings"] == 2
+
+    # Record findings: only asset1 found
+    client.post(
+        f"/api/assets/audits/{aid}/findings",
+        headers=admin_auth["headers"],
+        json={"asset_id": asset1.id, "found_present": True,
+              "condition": "양호"},
+    )
+    # Don't record finding for the other → expected_present=True, found_present=False
+
+    close = client.post(
+        f"/api/assets/audits/{aid}/close",
+        headers=admin_auth["headers"],
+    )
+    assert close.status_code == 200, close.text
+    body = close.json()
+    assert body["missing_count"] == 1
+    assert body["auto_disposed"] == 1
+
+    # Verify the missing one is now disposed
+    asset2 = db_session.query(Asset).filter(Asset.asset_no == "FA-1").first()
+    db_session.refresh(asset2)
+    assert asset2.status == AssetStatus.disposed
+
+
+def test_compliance_seed_baseline_and_dashboard(client, admin_auth, db_session):
+    res = client.post(
+        "/api/compliance/seed-baseline",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["inserted"] >= 10
+
+    # Listing
+    controls = client.get(
+        "/api/compliance/controls?framework=soc2",
+        headers=admin_auth["headers"],
+    ).json()
+    assert any(c["code"].startswith("SOC2-") for c in controls)
+
+    # Mark implemented + record test
+    a_ctrl = controls[0]
+    client.patch(
+        f"/api/compliance/controls/{a_ctrl['id']}/status?status=implemented",
+        headers=admin_auth["headers"],
+    )
+    test = client.post(
+        "/api/compliance/tests",
+        headers=admin_auth["headers"],
+        json={"control_id": a_ctrl["id"], "result": "pass",
+              "findings": "no issues"},
+    )
+    assert test.status_code == 200
+
+    dashboard = client.get(
+        "/api/compliance/dashboard", headers=admin_auth["headers"]
+    ).json()
+    assert dashboard["frameworks"]
+    # The just-tested control should not be overdue
+    overdue_ids = {o["control_id"] for o in dashboard["overdue_tests"]}
+    assert a_ctrl["id"] not in overdue_ids
+
+
+def test_drip_sequence_enroll_and_run(client, admin_auth, db_session):
+    """Sequence with 2 steps (day 0 + day 7); only day 0 fires immediately."""
+    seq = client.post(
+        "/api/crm/sequences",
+        headers=admin_auth["headers"],
+        json={
+            "name": "신규 환영 시퀀스",
+            "steps": [
+                {"delay_days": 0, "subject": "환영합니다", "body": "안녕하세요"},
+                {"delay_days": 7, "subject": "1주차 안내", "body": "팁..."},
+            ],
+        },
+    )
+    assert seq.status_code == 200, seq.text
+    sid = seq.json()["id"]
+
+    enroll = client.post(
+        f"/api/crm/sequences/{sid}/enroll?email=drip@x.com",
+        headers=admin_auth["headers"],
+    )
+    assert enroll.status_code == 200
+
+    # Duplicate enrollment rejected
+    dup = client.post(
+        f"/api/crm/sequences/{sid}/enroll?email=drip@x.com",
+        headers=admin_auth["headers"],
+    )
+    assert dup.status_code == 400
+
+    # Run due — only day-0 step should be sent
+    run = client.post(
+        "/api/crm/sequences/run-due",
+        headers=admin_auth["headers"],
+    )
+    assert run.status_code == 200
+    assert run.json()["sent_steps"] == 1
+    assert run.json()["completed_enrollments"] == 0
+
+
+def test_drip_completes_after_all_steps(client, admin_auth, db_session):
+    """An enrollment with all day-0 steps completes in one run."""
+    from app.modules.crm.models import SequenceEnrollment
+
+    seq = client.post(
+        "/api/crm/sequences",
+        headers=admin_auth["headers"],
+        json={
+            "name": "즉시 시퀀스",
+            "steps": [
+                {"delay_days": 0, "subject": "1", "body": ""},
+                {"delay_days": 0, "subject": "2", "body": ""},
+            ],
+        },
+    ).json()
+    client.post(
+        f"/api/crm/sequences/{seq['id']}/enroll?email=instant@x.com",
+        headers=admin_auth["headers"],
+    )
+    run = client.post(
+        "/api/crm/sequences/run-due",
+        headers=admin_auth["headers"],
+    )
+    assert run.json()["sent_steps"] == 2
+    assert run.json()["completed_enrollments"] == 1

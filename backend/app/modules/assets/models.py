@@ -76,3 +76,59 @@ class DepreciationEntry(BaseEntity):
     journal_entry_id: Mapped[int | None] = mapped_column(
         ForeignKey("fin_journal_entries.id")
     )
+
+
+class AssetTransfer(BaseEntity):
+    """Asset movement between custodians (직원/부서)."""
+
+    __tablename__ = "fa_transfers"
+
+    asset_id: Mapped[int] = mapped_column(
+        ForeignKey("fa_assets.id"), nullable=False, index=True
+    )
+    from_custodian_id: Mapped[int | None] = mapped_column(ForeignKey("hr_employees.id"))
+    to_custodian_id: Mapped[int] = mapped_column(
+        ForeignKey("hr_employees.id"), nullable=False
+    )
+    from_location: Mapped[str | None] = mapped_column(String(200))
+    to_location: Mapped[str] = mapped_column(String(200), nullable=False)
+    transfer_date: Mapped[date] = mapped_column(Date, default=date.today)
+    reason: Mapped[str | None] = mapped_column(String(500))
+
+
+class AssetAuditStatus(str, PyEnum):
+    open = "open"
+    closed = "closed"
+
+
+class AssetAudit(BaseEntity):
+    """자산 실사 — physical count across active assets in a period."""
+
+    __tablename__ = "fa_audits"
+
+    code: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
+    started_at: Mapped[date] = mapped_column(Date, default=date.today)
+    closed_at: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[AssetAuditStatus] = mapped_column(
+        Enum(AssetAuditStatus), default=AssetAuditStatus.open, nullable=False, index=True
+    )
+    auditor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    notes: Mapped[str | None] = mapped_column(String(2000))
+
+
+class AssetAuditFinding(BaseEntity):
+    """Per-asset reconciliation result from an audit."""
+
+    __tablename__ = "fa_audit_findings"
+
+    audit_id: Mapped[int] = mapped_column(
+        ForeignKey("fa_audits.id"), nullable=False, index=True
+    )
+    asset_id: Mapped[int] = mapped_column(
+        ForeignKey("fa_assets.id"), nullable=False, index=True
+    )
+    expected_present: Mapped[bool] = mapped_column(default=True)
+    found_present: Mapped[bool] = mapped_column(default=False)
+    location_match: Mapped[bool] = mapped_column(default=True)
+    condition: Mapped[str | None] = mapped_column(String(50))  # 양호 | 손상 | 노후
+    notes: Mapped[str | None] = mapped_column(String(500))

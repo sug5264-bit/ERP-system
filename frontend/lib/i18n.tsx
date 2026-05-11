@@ -1,7 +1,7 @@
 "use client";
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 
-export type Lang = "ko" | "en";
+export type Lang = "ko" | "en" | "ja" | "zh" | "vi";
 
 const messages = {
   ko: {
@@ -136,6 +136,75 @@ const messages = {
     "dashboard.topItems": "Top Items by Stock Value",
     "lang.toggle": "한",
   },
+  ja: {
+    "app.title": "WellGreen ERP",
+    "nav.dashboard": "ダッシュボード",
+    "nav.hr": "人事",
+    "nav.finance": "財務 / 会計",
+    "nav.inventory": "在庫 / 物流",
+    "nav.sales": "営業 / CRM",
+    "nav.approvals": "承認",
+    "nav.suppliers": "サプライヤー",
+    "nav.reports": "レポート",
+    "common.add": "追加",
+    "common.delete": "削除",
+    "common.save": "保存",
+    "common.cancel": "キャンセル",
+    "common.search": "検索",
+    "common.loading": "読み込み中...",
+    "common.empty": "データなし",
+    "auth.email": "メール",
+    "auth.password": "パスワード",
+    "auth.login": "ログイン",
+    "auth.logout": "ログアウト",
+    "lang.toggle": "한",
+  },
+  zh: {
+    "app.title": "WellGreen ERP",
+    "nav.dashboard": "仪表板",
+    "nav.hr": "人力资源",
+    "nav.finance": "财务",
+    "nav.inventory": "库存 / 物流",
+    "nav.sales": "销售 / CRM",
+    "nav.approvals": "审批",
+    "nav.suppliers": "供应商",
+    "nav.reports": "报告",
+    "common.add": "添加",
+    "common.delete": "删除",
+    "common.save": "保存",
+    "common.cancel": "取消",
+    "common.search": "搜索",
+    "common.loading": "加载中...",
+    "common.empty": "无数据",
+    "auth.email": "邮箱",
+    "auth.password": "密码",
+    "auth.login": "登录",
+    "auth.logout": "登出",
+    "lang.toggle": "한",
+  },
+  vi: {
+    "app.title": "WellGreen ERP",
+    "nav.dashboard": "Bảng điều khiển",
+    "nav.hr": "Nhân sự",
+    "nav.finance": "Tài chính",
+    "nav.inventory": "Tồn kho / Logistics",
+    "nav.sales": "Bán hàng / CRM",
+    "nav.approvals": "Phê duyệt",
+    "nav.suppliers": "Nhà cung cấp",
+    "nav.reports": "Báo cáo",
+    "common.add": "Thêm",
+    "common.delete": "Xóa",
+    "common.save": "Lưu",
+    "common.cancel": "Hủy",
+    "common.search": "Tìm kiếm",
+    "common.loading": "Đang tải...",
+    "common.empty": "Không có dữ liệu",
+    "auth.email": "Email",
+    "auth.password": "Mật khẩu",
+    "auth.login": "Đăng nhập",
+    "auth.logout": "Đăng xuất",
+    "lang.toggle": "한",
+  },
 } as const;
 
 type Key = keyof typeof messages.ko;
@@ -151,7 +220,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const saved = (typeof window !== "undefined" && localStorage.getItem("erp_lang")) as Lang | null;
-    if (saved === "ko" || saved === "en") setLangState(saved);
+    if (saved && ["ko", "en", "ja", "zh", "vi"].includes(saved)) setLangState(saved);
   }, []);
 
   const setLang = (l: Lang) => {
@@ -159,7 +228,10 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     localStorage.setItem("erp_lang", l);
   };
 
-  const t = (key: Key): string => messages[lang][key] ?? messages.ko[key] ?? key;
+  const t = (key: Key): string => {
+    const dict = messages[lang] as Record<string, string> | undefined;
+    return (dict?.[key] as string | undefined) ?? messages.ko[key] ?? key;
+  };
 
   return <I18nContext.Provider value={{ lang, setLang, t }}>{children}</I18nContext.Provider>;
 }

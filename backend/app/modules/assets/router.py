@@ -12,7 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_internal_user, require_role
+from app.core.auth import get_current_internal_user, get_current_user, require_role
+from app.modules.auth.models import User
 from app.core.db import get_db
 from app.core.pagination import Page, PageParams, paginate
 from app.modules.assets.models import (
@@ -302,3 +303,200 @@ def list_depreciation(
         }
         for e in q.all()
     ]
+
+
+# ---- Transfers + Audits ---------------------------------------------------
+
+
+from datetime import date as _dateT  # noqa: E402
+
+from app.modules.assets.models import (  # noqa: E402
+    AssetAudit,
+    AssetAuditFinding,
+    AssetAuditStatus,
+    AssetTransfer,
+)
+
+
+class TransferIn(BaseModel):
+    asset_id: int
+    from_custodian_id: int | None = None
+    to_custodian_id: int
+    from_location: str | None = None
+    to_location: str
+    transfer_date: _dateT | None = None
+    reason: str | None = None
+
+
+class TransferOut(TransferIn):
+    id: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AuditIn(BaseModel):
+    code: str
+    started_at: _dateT | None = None
+    notes: str | None = None
+
+
+class FindingIn(BaseModel):
+    asset_id: int
+    found_present: bool
+    location_match: bool = True
+    condition: str | None = None
+    notes: str | None = None
+
+
+@router.get("/transfers", response_model=list[TransferOut])
+def list_transfers(
+    asset_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    q = db.query(AssetTransfer).order_by(AssetTransfer.transfer_date.desc())
+    if asset_id is not None:
+        q = q.filter(AssetTransfer.asset_id == asset_id)
+    return q.all()
+
+
+@router.post(
+    "/transfers",
+    response_model=TransferOut,
+    dependencies=[Depends(require_role("manager"))],
+)
+def create_transfer(payload: TransferIn, db: Session = Depends(get_db)):
+    a = db.query(Asset).filter(Asset.id == payload.asset_id).with_for_update().first()
+    if not a:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    if a.status != AssetStatus.active:
+        raise HTTPException(status_code=400, detail=f"Cannot transfer {a.status.value} asset")
+    t = AssetTransfer(**payload.model_dump())
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    return t
+
+
+@router.get("/audits")
+def list_audits(db: Session = Depends(get_db)):
+    return [
+        {
+            "id": x.id, "code": x.code,
+            "started_at": x.started_at.isoformat(),
+            "closed_at": x.closed_at.isoformat() if x.closed_at else None,
+            "status": x.status.value,
+            "auditor_id": x.auditor_id,
+        }
+        for x in db.query(AssetAudit).order_by(AssetAudit.started_at.desc()).all()
+    ]
+
+
+@router.post(
+    "/audits",
+    dependencies=[Depends(require_role("admin"))],
+)
+def create_audit(
+    payload: AuditIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if db.query(AssetAudit).filter(AssetAudit.code == payload.code).first():
+        raise HTTPException(status_code=400, detail="Code already exists")
+    a = AssetAudit(
+        code=payload.code,
+        started_at=payload.started_at or _dateT.today(),
+        auditor_id=user.id,
+        notes=payload.notes,
+    )
+    db.add(a)
+    db.commit()
+    db.refresh(a)
+    # Auto-seed findings: one row per active asset (expected_present=True, found=False)
+    active_assets = db.query(Asset).filter(Asset.status == AssetStatus.active).all()
+    for ast in active_assets:
+        db.add(AssetAuditFinding(
+            audit_id=a.id, asset_id=ast.id,
+            expected_present=True, found_present=False,
+        ))
+    db.commit()
+    return {"id": a.id, "code": a.code, "expected_findings": len(active_assets)}
+
+
+@router.get("/audits/{aid}/findings")
+def list_findings(aid: int, db: Session = Depends(get_db)):
+    rows = (
+        db.query(AssetAuditFinding)
+        .filter(AssetAuditFinding.audit_id == aid)
+        .order_by(AssetAuditFinding.asset_id)
+        .all()
+    )
+    return [
+        {
+            "id": r.id, "asset_id": r.asset_id,
+            "expected_present": r.expected_present,
+            "found_present": r.found_present,
+            "location_match": r.location_match,
+            "condition": r.condition, "notes": r.notes,
+        }
+        for r in rows
+    ]
+
+
+@router.post(
+    "/audits/{aid}/findings",
+    dependencies=[Depends(require_role("staff"))],
+)
+def record_finding(aid: int, payload: FindingIn, db: Session = Depends(get_db)):
+    f = (
+        db.query(AssetAuditFinding)
+        .filter(
+            AssetAuditFinding.audit_id == aid,
+            AssetAuditFinding.asset_id == payload.asset_id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if not f:
+        raise HTTPException(status_code=404, detail="Finding not initialized for this asset")
+    f.found_present = payload.found_present
+    f.location_match = payload.location_match
+    f.condition = payload.condition
+    f.notes = payload.notes
+    db.commit()
+    return {"id": f.id, "asset_id": f.asset_id, "found_present": f.found_present}
+
+
+@router.post(
+    "/audits/{aid}/close",
+    dependencies=[Depends(require_role("admin"))],
+)
+def close_audit(aid: int, db: Session = Depends(get_db)):
+    """Close audit; auto-dispose every expected-but-not-found asset."""
+    a = db.query(AssetAudit).filter(AssetAudit.id == aid).with_for_update().first()
+    if not a:
+        raise HTTPException(status_code=404, detail="Not found")
+    if a.status == AssetAuditStatus.closed:
+        raise HTTPException(status_code=400, detail="Already closed")
+    missing = (
+        db.query(AssetAuditFinding)
+        .filter(
+            AssetAuditFinding.audit_id == aid,
+            AssetAuditFinding.expected_present.is_(True),
+            AssetAuditFinding.found_present.is_(False),
+        )
+        .all()
+    )
+    disposed = 0
+    for f in missing:
+        ast = db.query(Asset).filter(Asset.id == f.asset_id).with_for_update().first()
+        if ast and ast.status == AssetStatus.active:
+            ast.status = AssetStatus.disposed
+            ast.disposed_date = _dateT.today()
+            disposed += 1
+    a.status = AssetAuditStatus.closed
+    a.closed_at = _dateT.today()
+    db.commit()
+    return {
+        "id": a.id, "code": a.code,
+        "missing_count": len(missing),
+        "auto_disposed": disposed,
+    }

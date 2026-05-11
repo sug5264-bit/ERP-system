@@ -134,3 +134,65 @@ class CampaignSend(BaseEntity):
     opened_at: Mapped[datetime | None] = mapped_column(DateTime)
     clicked_at: Mapped[datetime | None] = mapped_column(DateTime)
     error_message: Mapped[str | None] = mapped_column(String(500))
+
+
+class TriggerType(str, PyEnum):
+    lead_created = "lead_created"        # 리드 등록 시
+    stage_changed = "stage_changed"       # opportunity 단계 변경
+    manual = "manual"                     # 수동 등록
+
+
+class SequenceStatus(str, PyEnum):
+    active = "active"
+    paused = "paused"
+    archived = "archived"
+
+
+class CampaignSequence(BaseEntity):
+    """A drip campaign: multiple Steps fired off after a trigger event,
+    spaced by delay_days. Example: trial day 0 / nudge day 3 / final day 7."""
+
+    __tablename__ = "crm_sequences"
+
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(500))
+    trigger: Mapped[TriggerType] = mapped_column(
+        Enum(TriggerType), default=TriggerType.manual, nullable=False, index=True
+    )
+    status: Mapped[SequenceStatus] = mapped_column(
+        Enum(SequenceStatus), default=SequenceStatus.active, nullable=False, index=True
+    )
+
+    steps: Mapped[list["SequenceStep"]] = relationship(
+        back_populates="sequence", cascade="all, delete-orphan",
+        order_by="SequenceStep.delay_days",
+    )
+
+
+class SequenceStep(BaseEntity):
+    __tablename__ = "crm_sequence_steps"
+
+    sequence_id: Mapped[int] = mapped_column(
+        ForeignKey("crm_sequences.id"), nullable=False, index=True
+    )
+    delay_days: Mapped[int] = mapped_column(default=0)  # days from enrollment
+    subject: Mapped[str] = mapped_column(String(500), nullable=False)
+    body: Mapped[str] = mapped_column(String(8000), default="")
+
+    sequence: Mapped[CampaignSequence] = relationship(back_populates="steps")
+
+
+class SequenceEnrollment(BaseEntity):
+    """A specific recipient enrolled in a sequence. Each step is sent when
+    elapsed_days >= step.delay_days."""
+
+    __tablename__ = "crm_sequence_enrollments"
+
+    sequence_id: Mapped[int] = mapped_column(
+        ForeignKey("crm_sequences.id"), nullable=False, index=True
+    )
+    recipient_email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    recipient_lead_id: Mapped[int | None] = mapped_column(ForeignKey("crm_leads.id"))
+    started_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_step_index: Mapped[int] = mapped_column(default=-1)  # -1 = not yet sent

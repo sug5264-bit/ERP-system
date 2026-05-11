@@ -53,6 +53,7 @@ MODULES = [
     "consolidation",
     "ai_posting",
     "qc",
+    "compliance",
 ]
 
 
