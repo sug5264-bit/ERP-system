@@ -23,3 +23,5 @@ pyotp>=2.9.0
 sentry-sdk[fastapi]>=2.10.0
 # Background task queue (optional — activated by celery_broker_url)
 celery[redis]>=5.4.0
+# AI auto-posting (optional — activated by ANTHROPIC_API_KEY)
+anthropic>=0.39.0

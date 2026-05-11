@@ -494,3 +494,228 @@ def list_material_requirements(period_code: str, db: Session = Depends(get_db)):
         }
         for r in rows
     ]
+
+
+# ---- Capacity planning + Shop floor control ------------------------------
+
+
+from app.modules.manufacturing.models import (  # noqa: E402
+    RoutingStep,
+    ShopFloorOp,
+    ShopFloorOpStatus,
+    WorkCenter,
+)
+
+
+class WorkCenterIn(BaseModel):
+    code: str
+    name: str
+    capacity_per_day: int = 480
+
+
+class WorkCenterOut(WorkCenterIn):
+    id: int
+    is_active: bool
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RoutingStepIn(BaseModel):
+    bom_id: int
+    sequence: int
+    work_center_id: int
+    setup_minutes: int = 0
+    run_minutes_per_unit: Decimal = Decimal("1")
+
+
+class RoutingStepOut(RoutingStepIn):
+    id: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+@router.get("/work-centers", response_model=list[WorkCenterOut])
+def list_work_centers(db: Session = Depends(get_db)):
+    return db.query(WorkCenter).filter(WorkCenter.is_active).order_by(WorkCenter.code).all()
+
+
+@router.post(
+    "/work-centers",
+    response_model=WorkCenterOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def create_work_center(payload: WorkCenterIn, db: Session = Depends(get_db)):
+    if payload.capacity_per_day <= 0:
+        raise HTTPException(status_code=400, detail="capacity_per_day must be > 0")
+    if db.query(WorkCenter).filter(WorkCenter.code == payload.code).first():
+        raise HTTPException(status_code=400, detail="Code already exists")
+    wc = WorkCenter(**payload.model_dump())
+    db.add(wc)
+    db.commit()
+    db.refresh(wc)
+    return wc
+
+
+@router.get("/routing/{bom_id}", response_model=list[RoutingStepOut])
+def list_routing(bom_id: int, db: Session = Depends(get_db)):
+    return (
+        db.query(RoutingStep)
+        .filter(RoutingStep.bom_id == bom_id)
+        .order_by(RoutingStep.sequence)
+        .all()
+    )
+
+
+@router.post(
+    "/routing",
+    response_model=RoutingStepOut,
+    dependencies=[Depends(require_role("admin"))],
+)
+def add_routing_step(payload: RoutingStepIn, db: Session = Depends(get_db)):
+    if not db.query(BillOfMaterials).filter(BillOfMaterials.id == payload.bom_id).first():
+        raise HTTPException(status_code=404, detail="BOM not found")
+    if not db.query(WorkCenter).filter(WorkCenter.id == payload.work_center_id).first():
+        raise HTTPException(status_code=404, detail="Work center not found")
+    if (
+        db.query(RoutingStep)
+        .filter(
+            RoutingStep.bom_id == payload.bom_id,
+            RoutingStep.sequence == payload.sequence,
+        )
+        .first()
+    ):
+        raise HTTPException(status_code=400,
+                              detail=f"Sequence {payload.sequence} already exists on this BOM")
+    s = RoutingStep(**payload.model_dump())
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return s
+
+
+@router.post(
+    "/work-orders/{wo_id}/generate-ops",
+    dependencies=[Depends(require_module_role("inventory", "manager"))],
+)
+def generate_shop_floor_ops(wo_id: int, db: Session = Depends(get_db)):
+    """Create one ShopFloorOp per RoutingStep of the WO's BOM. Idempotent —
+    re-running skips when ops already exist for the WO."""
+    wo = db.query(WorkOrder).filter(WorkOrder.id == wo_id).with_for_update().first()
+    if not wo:
+        raise HTTPException(status_code=404, detail="WO not found")
+    existing = (
+        db.query(ShopFloorOp).filter(ShopFloorOp.work_order_id == wo_id).first()
+    )
+    if existing:
+        return {"created": 0, "note": "Ops already exist"}
+    steps = (
+        db.query(RoutingStep)
+        .filter(RoutingStep.bom_id == wo.bom_id)
+        .order_by(RoutingStep.sequence)
+        .all()
+    )
+    qty = Decimal(wo.quantity)
+    for s in steps:
+        planned = int(s.setup_minutes + (Decimal(s.run_minutes_per_unit) * qty))
+        db.add(ShopFloorOp(
+            work_order_id=wo.id, routing_step_id=s.id,
+            work_center_id=s.work_center_id, sequence=s.sequence,
+            planned_minutes=planned,
+        ))
+    db.commit()
+    return {"created": len(steps), "work_order_id": wo.id}
+
+
+@router.get("/shop-floor-ops")
+def list_shop_floor_ops(
+    work_order_id: int | None = None,
+    status: ShopFloorOpStatus | None = None,
+    db: Session = Depends(get_db),
+):
+    q = db.query(ShopFloorOp).order_by(
+        ShopFloorOp.work_order_id, ShopFloorOp.sequence
+    )
+    if work_order_id is not None:
+        q = q.filter(ShopFloorOp.work_order_id == work_order_id)
+    if status:
+        q = q.filter(ShopFloorOp.status == status)
+    return [
+        {
+            "id": o.id, "work_order_id": o.work_order_id,
+            "sequence": o.sequence, "work_center_id": o.work_center_id,
+            "planned_minutes": o.planned_minutes,
+            "actual_minutes": o.actual_minutes,
+            "operator_id": o.operator_id,
+            "started_at": o.started_at.isoformat() if o.started_at else None,
+            "completed_at": o.completed_at.isoformat() if o.completed_at else None,
+            "status": o.status.value,
+        }
+        for o in q.all()
+    ]
+
+
+@router.post(
+    "/shop-floor-ops/{op_id}/start",
+    dependencies=[Depends(require_module_role("inventory", "staff"))],
+)
+def start_op(op_id: int, db: Session = Depends(get_db)):
+    from app.core.auth import get_current_user as _gcu
+    from fastapi import Request as _Req  # not used; placeholder
+    op = db.query(ShopFloorOp).filter(ShopFloorOp.id == op_id).with_for_update().first()
+    if not op:
+        raise HTTPException(status_code=404, detail="Not found")
+    if op.status not in (ShopFloorOpStatus.pending, ShopFloorOpStatus.paused):
+        raise HTTPException(status_code=400, detail=f"Cannot start {op.status.value}")
+    op.status = ShopFloorOpStatus.in_progress
+    op.started_at = datetime.utcnow()
+    db.commit()
+    return {"id": op.id, "status": op.status.value}
+
+
+@router.post(
+    "/shop-floor-ops/{op_id}/complete",
+    dependencies=[Depends(require_module_role("inventory", "staff"))],
+)
+def complete_op(op_id: int, actual_minutes: int, db: Session = Depends(get_db)):
+    if actual_minutes <= 0 or actual_minutes > 24 * 60 * 7:
+        raise HTTPException(status_code=400, detail="actual_minutes out of range")
+    op = db.query(ShopFloorOp).filter(ShopFloorOp.id == op_id).with_for_update().first()
+    if not op:
+        raise HTTPException(status_code=404, detail="Not found")
+    if op.status != ShopFloorOpStatus.in_progress:
+        raise HTTPException(status_code=400, detail=f"Cannot complete {op.status.value}")
+    op.actual_minutes = actual_minutes
+    op.status = ShopFloorOpStatus.completed
+    op.completed_at = datetime.utcnow()
+    db.commit()
+    return {"id": op.id, "actual_minutes": actual_minutes}
+
+
+@router.get("/capacity-load")
+def capacity_load(period_code: str, db: Session = Depends(get_db)):
+    """Aggregate planned minutes per work-center for the period. Compares to
+    capacity_per_day × business days. Useful for spotting bottlenecks."""
+    from sqlalchemy import func as _f
+
+    # Sum planned_minutes per work-center over WO ops linked to MPS in period
+    rows = (
+        db.query(
+            WorkCenter.id, WorkCenter.code, WorkCenter.name,
+            WorkCenter.capacity_per_day,
+            _f.coalesce(_f.sum(ShopFloorOp.planned_minutes), 0).label("load"),
+        )
+        .outerjoin(ShopFloorOp, ShopFloorOp.work_center_id == WorkCenter.id)
+        .outerjoin(WorkOrder, WorkOrder.id == ShopFloorOp.work_order_id)
+        .filter(WorkCenter.is_active.is_(True))
+        .group_by(WorkCenter.id)
+        .all()
+    )
+    return [
+        {
+            "work_center_id": r.id, "code": r.code, "name": r.name,
+            "capacity_per_day": r.capacity_per_day,
+            "load_minutes": int(r.load),
+            "utilization_pct": round(
+                int(r.load) / max(r.capacity_per_day, 1) * 100, 1
+            ),
+        }
+        for r in rows
+    ]

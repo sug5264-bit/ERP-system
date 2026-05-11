@@ -67,7 +67,102 @@ class Proposal(BaseModel):
 
 def propose_entry(db: Session, description: str, amount: Decimal,
                   tax_amount: Decimal | None = None) -> Proposal:
-    """Heuristic mapping. Production: swap for LLM."""
+    """Default heuristic mapping. If `ANTHROPIC_API_KEY` is set, swap in the
+    LLM-based proposer; falls back to heuristic on any error."""
+    import os
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        try:
+            return _llm_propose(db, description, amount, tax_amount)
+        except Exception:
+            import logging
+            logging.getLogger("erp.ai_posting").exception(
+                "LLM proposal failed, falling back to heuristic"
+            )
+    return _heuristic_propose(db, description, amount, tax_amount)
+
+
+def _llm_propose(db: Session, description: str, amount: Decimal,
+                 tax_amount: Decimal | None = None) -> Proposal:
+    """LLM-driven proposal using Anthropic Claude.
+
+    We hand the LLM the Chart of Accounts and ask it to pick debit/credit
+    accounts + line amounts. The result is validated (balanced, valid codes)
+    before being returned. Any validation failure raises and the caller falls
+    back to the rule-based path.
+    """
+    import json as _json
+    import anthropic
+
+    accounts = db.query(Account).order_by(Account.code).all()
+    coa_text = "\n".join(
+        f"{a.code} {a.name} ({a.type.value if hasattr(a.type, 'value') else a.type})"
+        for a in accounts
+    )
+
+    prompt = f"""You are a Korean accountant. Given the description and amount,
+produce a balanced journal entry by selecting debit and credit accounts from
+the chart of accounts below.
+
+Chart of accounts:
+{coa_text}
+
+Transaction:
+- Description: {description}
+- Amount: {amount} KRW
+- VAT (if applicable): {tax_amount or 0} KRW
+
+Respond ONLY with JSON in this exact shape:
+{{"lines": [{{"account_code": "1234", "debit": 0, "credit": 0}}, ...],
+  "confidence": 0.0-1.0, "rationale": "short Korean rationale"}}
+Each line must use codes from the chart. Debits must equal credits.
+"""
+
+    client = anthropic.Anthropic()
+    msg = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=512,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = msg.content[0].text if msg.content else "{}"
+    # Strip Markdown code fences if present
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    data = _json.loads(text)
+
+    by_code = {a.code: a for a in accounts}
+    lines: list[ProposalLine] = []
+    total_dr = total_cr = Decimal("0")
+    for ln in data.get("lines", []):
+        acc = by_code.get(ln.get("account_code"))
+        if not acc:
+            raise ValueError(f"LLM picked unknown account {ln.get('account_code')}")
+        d = Decimal(str(ln.get("debit", 0) or 0))
+        c = Decimal(str(ln.get("credit", 0) or 0))
+        total_dr += d
+        total_cr += c
+        lines.append(ProposalLine(
+            account_code=acc.code, account_name=acc.name, debit=d, credit=c,
+        ))
+    if total_dr != total_cr:
+        raise ValueError(f"LLM produced unbalanced entry: dr {total_dr} != cr {total_cr}")
+    if not lines:
+        raise ValueError("LLM produced no lines")
+
+    return Proposal(
+        description=description,
+        confidence=float(data.get("confidence", 0.75)),
+        matched_rule=f"LLM: {data.get('rationale', '')[:80]}",
+        lines=lines,
+    )
+
+
+def _heuristic_propose(db: Session, description: str, amount: Decimal,
+                        tax_amount: Decimal | None = None) -> Proposal:
+    """Heuristic mapping based on keyword rules — the deterministic fallback."""
     desc_lower = description.lower()
     matched_keyword = None
     debit_code = credit_code = None

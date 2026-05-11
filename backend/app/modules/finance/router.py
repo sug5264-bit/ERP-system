@@ -567,3 +567,107 @@ def vat_return(
         "payable_or_refund": payable,
         "is_refund": payable < 0,
     }
+
+
+# ---- Financial statement exports ------------------------------------------
+
+
+@router.get("/balance-sheet/export")
+def balance_sheet_export(
+    as_of: _date | None = None,
+    format: str = "csv",
+    db: Session = Depends(get_db),
+):
+    """재무상태표 export (csv | xlsx | pdf). Same data as /balance-sheet."""
+    from app.core.exports import export_table
+
+    bs = balance_sheet(as_of=as_of, db=db)
+    rows: list[list] = []
+    rows.append(["자산", "", ""])
+    for it in bs["assets"]["items"]:
+        rows.append([f"  {it['code']} {it['name']}", "", it["balance"]])
+    rows.append(["자산 합계", "", bs["assets"]["total"]])
+    rows.append(["", "", ""])
+    rows.append(["부채", "", ""])
+    for it in bs["liabilities"]["items"]:
+        rows.append([f"  {it['code']} {it['name']}", "", it["balance"]])
+    rows.append(["부채 합계", "", bs["liabilities"]["total"]])
+    rows.append(["", "", ""])
+    rows.append(["자본", "", ""])
+    for it in bs["equity"]["items"]:
+        rows.append([f"  {it['code']} {it['name']}", "", it["balance"]])
+    rows.append(["자본 합계", "", bs["equity"]["total"]])
+    rows.append(["", "", ""])
+    rows.append(["부채+자본 합계", "", bs["total_liab_eq"]])
+    headers = ["계정", "", f"잔액 ({bs['as_of']})"]
+    return export_table(rows, headers, f"balance_sheet_{bs['as_of']}", format)
+
+
+@router.get("/income-statement/export")
+def income_statement_export(
+    start: _date,
+    end: _date,
+    format: str = "csv",
+    db: Session = Depends(get_db),
+):
+    from app.core.exports import export_table
+
+    body = income_statement(start=start, end=end, db=db)
+    rows = [
+        ["매출", body["revenue"]],
+        ["비용", body["expense"]],
+        ["당기순이익", body["net_income"]],
+    ]
+    headers = ["구분", f"금액 ({body['start']} ~ {body['end']})"]
+    return export_table(
+        rows, headers, f"income_statement_{body['start']}_{body['end']}", format,
+    )
+
+
+@router.get("/cash-flow/export")
+def cash_flow_export(
+    start: _date,
+    end: _date,
+    cash_account_codes: str = "1100,1110,1120",
+    format: str = "csv",
+    db: Session = Depends(get_db),
+):
+    from app.core.exports import export_table
+
+    cf = cash_flow(start=start, end=end, cash_account_codes=cash_account_codes, db=db)
+    rows = [
+        ["영업활동", cf["operating"]],
+        ["투자활동", cf["investing"]],
+        ["재무활동", cf["financing"]],
+        ["현금 순증감", cf["net_change"]],
+    ]
+    headers = ["구분", f"금액 ({cf['start']} ~ {cf['end']})"]
+    return export_table(
+        rows, headers, f"cash_flow_{cf['start']}_{cf['end']}", format,
+    )
+
+
+@router.get("/vat-return/export")
+def vat_return_export(
+    start: _date,
+    end: _date,
+    format: str = "csv",
+    db: Session = Depends(get_db),
+):
+    from app.core.exports import export_table
+
+    vat = vat_return(start=start, end=end, db=db)
+    label = "환급세액" if vat["is_refund"] else "납부세액"
+    rows = [
+        ["매출 (output)", vat["sales"]["invoice_count"],
+         vat["sales"]["supply_amount"], vat["sales"]["vat_amount"]],
+        ["매입 (input)", vat["purchase"]["invoice_count"],
+         vat["purchase"]["supply_amount"], vat["purchase"]["vat_amount"]],
+        [label, "", "", abs(vat["payable_or_refund"])],
+    ]
+    headers = ["구분", "건수", "공급가액", "세액"]
+    return export_table(
+        rows, headers,
+        f"vat_return_{vat['period']['start']}_{vat['period']['end']}",
+        format,
+    )

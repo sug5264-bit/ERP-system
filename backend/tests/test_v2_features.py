@@ -2406,3 +2406,153 @@ def test_ai_posting_accept_creates_journal(client, admin_auth, db_session):
         JournalEntry.reference == "AI-PROP"
     ).count()
     assert cnt >= 1
+
+
+# --- Phase 11: capacity + shop floor + statement exports ------------------
+
+
+def test_capacity_routing_and_shop_floor_ops(client, admin_auth, db_session):
+    """BOM with routing → WO release → /generate-ops → start/complete operator clock."""
+    from app.modules.inventory.models import Item
+    from app.modules.manufacturing.models import BillOfMaterials, BomComponent
+
+    fg = Item(sku="CAP-FG", name="제품", stock_qty=Decimal("0"))
+    raw = Item(sku="CAP-R", name="원료", stock_qty=Decimal("100"))
+    db_session.add_all([fg, raw])
+    db_session.flush()
+    bom = BillOfMaterials(
+        finished_item_id=fg.id, version="v1",
+        output_quantity=Decimal("1"), is_active=True,
+    )
+    bom.components.append(BomComponent(
+        component_item_id=raw.id, quantity_per=Decimal("2"),
+    ))
+    db_session.add(bom)
+    db_session.commit()
+
+    wc = client.post(
+        "/api/manufacturing/work-centers",
+        headers=admin_auth["headers"],
+        json={"code": "WC-1", "name": "포장 라인", "capacity_per_day": 480},
+    )
+    assert wc.status_code == 200, wc.text
+    wc_id = wc.json()["id"]
+
+    # Add 2 routing steps
+    client.post(
+        "/api/manufacturing/routing",
+        headers=admin_auth["headers"],
+        json={
+            "bom_id": bom.id, "sequence": 10, "work_center_id": wc_id,
+            "setup_minutes": 15, "run_minutes_per_unit": 2,
+        },
+    )
+    client.post(
+        "/api/manufacturing/routing",
+        headers=admin_auth["headers"],
+        json={
+            "bom_id": bom.id, "sequence": 20, "work_center_id": wc_id,
+            "setup_minutes": 10, "run_minutes_per_unit": 1,
+        },
+    )
+
+    wo = client.post(
+        "/api/manufacturing/work-orders",
+        headers=admin_auth["headers"],
+        json={"wo_no": "WO-CAP-1", "bom_id": bom.id, "quantity": 10},
+    ).json()
+
+    gen = client.post(
+        f"/api/manufacturing/work-orders/{wo['id']}/generate-ops",
+        headers=admin_auth["headers"],
+    )
+    assert gen.json()["created"] == 2
+
+    # Idempotent
+    again = client.post(
+        f"/api/manufacturing/work-orders/{wo['id']}/generate-ops",
+        headers=admin_auth["headers"],
+    )
+    assert again.json()["created"] == 0
+
+    ops = client.get(
+        f"/api/manufacturing/shop-floor-ops?work_order_id={wo['id']}",
+        headers=admin_auth["headers"],
+    ).json()
+    assert len(ops) == 2
+    # Step 10: 15 + 2*10 = 35min; Step 20: 10 + 1*10 = 20min
+    assert ops[0]["planned_minutes"] == 35
+    assert ops[1]["planned_minutes"] == 20
+
+    op_id = ops[0]["id"]
+    client.post(f"/api/manufacturing/shop-floor-ops/{op_id}/start",
+                 headers=admin_auth["headers"])
+    done = client.post(
+        f"/api/manufacturing/shop-floor-ops/{op_id}/complete?actual_minutes=40",
+        headers=admin_auth["headers"],
+    )
+    assert done.status_code == 200
+    assert done.json()["actual_minutes"] == 40
+
+
+def test_capacity_load_endpoint(client, admin_auth, db_session):
+    wc = client.post(
+        "/api/manufacturing/work-centers",
+        headers=admin_auth["headers"],
+        json={"code": "WC-LOAD", "name": "조립 라인", "capacity_per_day": 480},
+    ).json()
+    res = client.get(
+        "/api/manufacturing/capacity-load?period_code=2026-W23",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200
+    rows = res.json()
+    found = next((r for r in rows if r["code"] == "WC-LOAD"), None)
+    assert found is not None
+    assert found["capacity_per_day"] == 480
+
+
+def test_balance_sheet_csv_export(client, admin_auth, db_session):
+    """Export endpoint returns CSV with the right header & a few lines."""
+    from app.modules.finance.models import Account, AccountType, JournalEntry, JournalLine
+
+    cash = Account(code="EXP-1", name="현금", type=AccountType.asset)
+    cap = Account(code="EXP-2", name="자본금", type=AccountType.equity)
+    db_session.add_all([cash, cap])
+    db_session.flush()
+    e = JournalEntry(entry_date=date(2026, 1, 1), description="seed")
+    e.lines.append(JournalLine(account_id=cash.id, debit=1000, credit=0))
+    e.lines.append(JournalLine(account_id=cap.id, debit=0, credit=1000))
+    db_session.add(e)
+    db_session.commit()
+
+    res = client.get(
+        "/api/finance/balance-sheet/export?as_of=2026-12-31&format=csv",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200
+    body = res.content.decode("utf-8-sig", errors="ignore")
+    assert "자산" in body
+    assert "1000" in body
+
+
+def test_ai_posting_llm_falls_back_to_heuristic(client, admin_auth, db_session,
+                                                  monkeypatch):
+    """Without ANTHROPIC_API_KEY the LLM path is skipped silently."""
+    from app.modules.finance.models import Account, AccountType
+
+    db_session.add_all([
+        Account(code="1100", name="현금", type=AccountType.asset),
+        Account(code="5120", name="여비교통비", type=AccountType.expense),
+    ])
+    db_session.commit()
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    res = client.post(
+        "/api/ai-posting/propose",
+        headers=admin_auth["headers"],
+        json={"description": "택시 출장", "amount": 20000},
+    )
+    body = res.json()
+    # Heuristic match — matched_rule starts without "LLM:"
+    assert not (body.get("matched_rule") or "").startswith("LLM:")
