@@ -687,3 +687,313 @@ def mark_sup_invoice_paid(inv_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(inv)
     return inv
+
+
+# ---- RFQ + Vendor scorecard -----------------------------------------------
+
+
+from app.modules.suppliers.models import (  # noqa: E402
+    RFQ,
+    RFQItem,
+    RFQResponse,
+    RFQResponseLine,
+    RFQResponseStatus,
+    RFQStatus,
+)
+
+
+class RFQItemIn(_BM):
+    item_id: int
+    quantity: _D
+
+
+class RFQIn(_BM):
+    rfq_no: str
+    title: str
+    due_date: _date | None = None
+    notes: str | None = None
+    items: list[RFQItemIn] = _Field(min_length=1)
+
+
+class RFQItemOut(_BM):
+    id: int
+    item_id: int
+    quantity: _D
+    model_config = _Cfg(from_attributes=True)
+
+
+class RFQOut(_BM):
+    id: int
+    rfq_no: str
+    title: str
+    due_date: _date | None
+    status: RFQStatus
+    notes: str | None
+    awarded_response_id: int | None
+    items: list[RFQItemOut]
+    model_config = _Cfg(from_attributes=True)
+
+
+class RFQResponseLineIn(_BM):
+    rfq_item_id: int
+    unit_price: _D
+
+
+class RFQResponseIn(_BM):
+    rfq_id: int
+    supplier_id: int
+    lead_time_days: int | None = None
+    notes: str | None = None
+    lines: list[RFQResponseLineIn] = _Field(min_length=1)
+
+
+class RFQResponseLineOut(RFQResponseLineIn):
+    id: int
+    model_config = _Cfg(from_attributes=True)
+
+
+class RFQResponseOut(_BM):
+    id: int
+    rfq_id: int
+    supplier_id: int
+    total: _D
+    lead_time_days: int | None
+    status: RFQResponseStatus
+    notes: str | None
+    submitted_at: _date | None
+    lines: list[RFQResponseLineOut]
+    model_config = _Cfg(from_attributes=True)
+
+
+@router.get("/rfqs", response_model=list[RFQOut])
+def list_rfqs(status: RFQStatus | None = None, db: Session = Depends(get_db)):
+    q = (
+        db.query(RFQ)
+        .options(selectinload(RFQ.items))
+        .order_by(RFQ.created_at.desc())
+    )
+    if status:
+        q = q.filter(RFQ.status == status)
+    return q.all()
+
+
+@router.post(
+    "/rfqs",
+    response_model=RFQOut,
+    dependencies=[Depends(require_module_role("inventory", "manager"))],
+)
+def create_rfq(payload: RFQIn, db: Session = Depends(get_db)):
+    if db.query(RFQ).filter(RFQ.rfq_no == payload.rfq_no).first():
+        raise HTTPException(status_code=400, detail="RFQ no already exists")
+    rfq = RFQ(
+        rfq_no=payload.rfq_no, title=payload.title,
+        due_date=payload.due_date, notes=payload.notes,
+    )
+    for it in payload.items:
+        rfq.items.append(RFQItem(**it.model_dump()))
+    db.add(rfq)
+    db.commit()
+    db.refresh(rfq)
+    return rfq
+
+
+@router.post(
+    "/rfqs/{rfq_id}/send",
+    response_model=RFQOut,
+    dependencies=[Depends(require_module_role("inventory", "manager"))],
+)
+def send_rfq(rfq_id: int, db: Session = Depends(get_db)):
+    rfq = db.query(RFQ).filter(RFQ.id == rfq_id).with_for_update().first()
+    if not rfq:
+        raise HTTPException(status_code=404, detail="Not found")
+    if rfq.status != RFQStatus.draft:
+        raise HTTPException(status_code=400, detail=f"Cannot send from {rfq.status.value}")
+    rfq.status = RFQStatus.sent
+    db.commit()
+    db.refresh(rfq)
+    return rfq
+
+
+@router.get("/rfqs/{rfq_id}/responses", response_model=list[RFQResponseOut])
+def list_rfq_responses(rfq_id: int, db: Session = Depends(get_db)):
+    return (
+        db.query(RFQResponse)
+        .options(selectinload(RFQResponse.lines))
+        .filter(RFQResponse.rfq_id == rfq_id)
+        .order_by(RFQResponse.total.asc())
+        .all()
+    )
+
+
+@router.post("/rfqs/responses", response_model=RFQResponseOut)
+def submit_rfq_response(payload: RFQResponseIn, db: Session = Depends(get_db)):
+    """Supplier submits their bid. Computes total = sum(line.unit_price * rfq_item.quantity)."""
+    rfq = (
+        db.query(RFQ)
+        .options(selectinload(RFQ.items))
+        .filter(RFQ.id == payload.rfq_id)
+        .first()
+    )
+    if not rfq:
+        raise HTTPException(status_code=404, detail="RFQ not found")
+    if rfq.status not in (RFQStatus.sent, RFQStatus.draft):
+        raise HTTPException(status_code=400, detail=f"RFQ is {rfq.status.value}")
+    existing = (
+        db.query(RFQResponse)
+        .filter(
+            RFQResponse.rfq_id == payload.rfq_id,
+            RFQResponse.supplier_id == payload.supplier_id,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail="Supplier already responded")
+
+    items_by_id = {it.id: it for it in rfq.items}
+    total = _D("0")
+    for line in payload.lines:
+        ri = items_by_id.get(line.rfq_item_id)
+        if not ri:
+            raise HTTPException(status_code=400,
+                                  detail=f"RFQ item {line.rfq_item_id} not on this RFQ")
+        total += _D(line.unit_price) * _D(ri.quantity)
+
+    resp = RFQResponse(
+        rfq_id=payload.rfq_id, supplier_id=payload.supplier_id,
+        lead_time_days=payload.lead_time_days, notes=payload.notes,
+        total=total, status=RFQResponseStatus.submitted,
+        submitted_at=_date.today(),
+    )
+    for line in payload.lines:
+        resp.lines.append(RFQResponseLine(**line.model_dump()))
+    db.add(resp)
+    db.commit()
+    db.refresh(resp)
+    return resp
+
+
+@router.post(
+    "/rfqs/{rfq_id}/award/{response_id}",
+    dependencies=[Depends(require_module_role("inventory", "manager"))],
+)
+def award_rfq(rfq_id: int, response_id: int, db: Session = Depends(get_db)):
+    """Award the RFQ to the chosen response → close RFQ + auto-generate a PO."""
+    rfq = db.query(RFQ).filter(RFQ.id == rfq_id).with_for_update().first()
+    if not rfq:
+        raise HTTPException(status_code=404, detail="RFQ not found")
+    if rfq.status not in (RFQStatus.sent, RFQStatus.draft):
+        raise HTTPException(status_code=400, detail=f"Cannot award {rfq.status.value}")
+    resp = (
+        db.query(RFQResponse)
+        .options(selectinload(RFQResponse.lines))
+        .filter(RFQResponse.id == response_id, RFQResponse.rfq_id == rfq_id)
+        .with_for_update()
+        .first()
+    )
+    if not resp:
+        raise HTTPException(status_code=404, detail="Response not found on this RFQ")
+
+    # Mark other responses rejected
+    db.query(RFQResponse).filter(
+        RFQResponse.rfq_id == rfq_id, RFQResponse.id != response_id
+    ).update({"status": RFQResponseStatus.rejected}, synchronize_session=False)
+
+    resp.status = RFQResponseStatus.awarded
+    rfq.awarded_response_id = resp.id
+    rfq.status = RFQStatus.closed
+
+    # Auto-PO
+    from datetime import datetime as _dtnow
+
+    rfq_items_by_id = {it.id: it for it in db.query(RFQItem).filter(RFQItem.rfq_id == rfq.id).all()}
+    po = PurchaseOrder(
+        po_no=f"PO-{rfq.rfq_no}",
+        supplier_id=resp.supplier_id,
+        status=POStatus.draft,
+        notes=f"Auto-PO from RFQ {rfq.rfq_no}",
+    )
+    total = _D("0")
+    for line in resp.lines:
+        ri = rfq_items_by_id.get(line.rfq_item_id)
+        if not ri:
+            continue
+        po.items.append(PurchaseOrderItem(
+            item_id=ri.item_id, quantity=ri.quantity, unit_price=line.unit_price,
+        ))
+        total += _D(line.unit_price) * _D(ri.quantity)
+    po.total = total
+    db.add(po)
+    db.commit()
+    db.refresh(po)
+    return {"rfq_id": rfq.id, "awarded_response_id": resp.id, "po_id": po.id, "po_no": po.po_no}
+
+
+@router.get("/scorecard")
+def vendor_scorecard(
+    supplier_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Per-supplier KPI: on-time delivery rate, average lead time, match rate.
+
+    Derived from PO + GR + SupplierInvoice tables. No persisted state.
+    """
+    from sqlalchemy import case, func as _f
+
+    sup_q = db.query(Supplier)
+    if supplier_id is not None:
+        sup_q = sup_q.filter(Supplier.id == supplier_id)
+    suppliers = sup_q.all()
+
+    out = []
+    for sup in suppliers:
+        pos = (
+            db.query(PurchaseOrder)
+            .filter(
+                PurchaseOrder.supplier_id == sup.id,
+                PurchaseOrder.status.in_([POStatus.received, POStatus.acknowledged, POStatus.shipped]),
+            )
+            .all()
+        )
+        if not pos:
+            out.append({
+                "supplier_id": sup.id, "supplier_code": sup.code, "supplier_name": sup.name,
+                "po_count": 0, "on_time_rate": None, "avg_lead_time_days": None,
+                "match_rate": None, "total_value": 0.0,
+            })
+            continue
+
+        on_time = 0
+        lead_times: list[int] = []
+        total_value = _D("0")
+        # On-time = last GR posted on/before expected_date
+        for po in pos:
+            total_value += _D(po.total)
+            grs = (
+                db.query(GoodsReceipt)
+                .filter(GoodsReceipt.po_id == po.id, GoodsReceipt.status == GRStatus.posted)
+                .order_by(GoodsReceipt.received_date.desc())
+                .all()
+            )
+            if not grs:
+                continue
+            last = grs[0]
+            if po.expected_date and last.received_date <= po.expected_date:
+                on_time += 1
+            lead_times.append((last.received_date - po.order_date).days)
+
+        invs = db.query(SupplierInvoice).filter(SupplierInvoice.supplier_id == sup.id).all()
+        matched = sum(1 for i in invs if i.status in (SupplierInvoiceStatus.matched, SupplierInvoiceStatus.paid))
+
+        out.append({
+            "supplier_id": sup.id,
+            "supplier_code": sup.code,
+            "supplier_name": sup.name,
+            "po_count": len(pos),
+            "on_time_rate": round(on_time / len(pos), 3) if pos else None,
+            "avg_lead_time_days": (
+                round(sum(lead_times) / len(lead_times), 1) if lead_times else None
+            ),
+            "match_rate": round(matched / len(invs), 3) if invs else None,
+            "total_value": float(total_value),
+        })
+    return {"scorecard": out}

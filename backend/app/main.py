@@ -110,7 +110,29 @@ def _run_due_schedules() -> None:
         db.close()
 
 
+def _init_sentry() -> None:
+    """Wire Sentry SDK if a DSN is configured. Silently skips otherwise."""
+    dsn = getattr(settings, "sentry_dsn", None)
+    if not dsn:
+        return
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+        from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+
+        sentry_sdk.init(
+            dsn=dsn,
+            environment=settings.environment,
+            traces_sample_rate=getattr(settings, "sentry_traces_sample_rate", 0.0),
+            integrations=[FastApiIntegration(), SqlalchemyIntegration()],
+        )
+    except ImportError:
+        # sentry_sdk not installed — production should pin it in requirements.
+        pass
+
+
 def create_app() -> FastAPI:
+    _init_sentry()
     app = FastAPI(title=settings.app_name)
 
     issues = validate_for_production(settings)
@@ -207,7 +229,45 @@ def create_app() -> FastAPI:
         result["checks"]["scheduler"] = {"enabled": settings.scheduler_enabled}
         result["checks"]["smtp"] = {"configured": bool(settings.smtp_host)}
         result["checks"]["oauth_google"] = {"configured": bool(settings.google_client_id)}
+        result["checks"]["sentry"] = {
+            "configured": bool(getattr(settings, "sentry_dsn", None))
+        }
+        result["checks"]["celery"] = {
+            "configured": bool(getattr(settings, "celery_broker_url", None))
+        }
         return result
+
+    @app.get("/api/health/live")
+    def health_live():
+        """Liveness probe — just process is up. No external dependencies."""
+        return {"status": "ok"}
+
+    @app.get("/api/health/ready")
+    def health_ready():
+        """Readiness probe — DB reachable + migration applied. Returns 503
+        if any dependency is down so Kubernetes/Cloud Run can stop routing
+        traffic until recovery."""
+        from fastapi import Response
+        from sqlalchemy import text
+
+        try:
+            db = SessionLocal()
+            try:
+                db.execute(text("SELECT 1"))
+                row = db.execute(text("SELECT version_num FROM alembic_version")).first()
+                if not row:
+                    return Response(
+                        content='{"ready": false, "reason": "no migration"}',
+                        status_code=503, media_type="application/json",
+                    )
+            finally:
+                db.close()
+        except Exception as exc:
+            return Response(
+                content=f'{{"ready": false, "reason": "db: {exc}"}}',
+                status_code=503, media_type="application/json",
+            )
+        return {"ready": True}
 
     if settings.scheduler_enabled:
         from apscheduler.schedulers.background import BackgroundScheduler

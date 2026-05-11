@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
     scheduler_interval_minutes: int = 5
 
+    # Observability (optional)
+    sentry_dsn: str | None = None
+    sentry_traces_sample_rate: float = 0.0  # 0.0 disables performance traces
+
+    # Background task queue (optional)
+    celery_broker_url: str | None = None        # e.g. "redis://localhost:6379/0"
+    celery_result_backend: str | None = None
+
     # Rate limiting
     rate_limit_enabled: bool = True
     rate_limit_per_minute: int = 240

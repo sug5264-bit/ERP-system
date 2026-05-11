@@ -2053,3 +2053,156 @@ def test_cash_flow_priority_revenue_over_asset(client, admin_auth, db_session):
     # Revenue contra wins priority → operating, not investing
     assert body["operating"] == 100
     assert body["investing"] == 0
+
+
+# --- Phase 9: RFQ + Vendor scorecard + Health probes -----------------------
+
+
+def test_rfq_to_po_award_flow(client, admin_auth, db_session):
+    """End-to-end: RFQ → send → 2 suppliers respond → award → auto-PO."""
+    from app.modules.inventory.models import Item
+    from app.modules.suppliers.models import Supplier
+
+    item = Item(sku="RFQ-IT", name="자재", stock_qty=Decimal("0"))
+    sA = Supplier(code="S-A", name="공급사A")
+    sB = Supplier(code="S-B", name="공급사B")
+    db_session.add_all([item, sA, sB])
+    db_session.commit()
+
+    rfq = client.post(
+        "/api/suppliers/rfqs",
+        headers=admin_auth["headers"],
+        json={
+            "rfq_no": "RFQ-001",
+            "title": "원료 견적요청",
+            "items": [{"item_id": item.id, "quantity": 100}],
+        },
+    )
+    assert rfq.status_code == 200, rfq.text
+    rfq_id = rfq.json()["id"]
+    rfq_item_id = rfq.json()["items"][0]["id"]
+
+    client.post(f"/api/suppliers/rfqs/{rfq_id}/send", headers=admin_auth["headers"])
+
+    # Two responses with different prices
+    r1 = client.post(
+        "/api/suppliers/rfqs/responses",
+        headers=admin_auth["headers"],
+        json={
+            "rfq_id": rfq_id, "supplier_id": sA.id, "lead_time_days": 5,
+            "lines": [{"rfq_item_id": rfq_item_id, "unit_price": 100}],
+        },
+    )
+    assert r1.status_code == 200, r1.text
+    assert float(r1.json()["total"]) == 10000
+    r2 = client.post(
+        "/api/suppliers/rfqs/responses",
+        headers=admin_auth["headers"],
+        json={
+            "rfq_id": rfq_id, "supplier_id": sB.id, "lead_time_days": 7,
+            "lines": [{"rfq_item_id": rfq_item_id, "unit_price": 90}],
+        },
+    )
+    r2_id = r2.json()["id"]
+
+    # Sorted ascending by total — B should be first
+    lst = client.get(
+        f"/api/suppliers/rfqs/{rfq_id}/responses",
+        headers=admin_auth["headers"],
+    ).json()
+    assert lst[0]["supplier_id"] == sB.id
+
+    # Award to B (cheaper)
+    award = client.post(
+        f"/api/suppliers/rfqs/{rfq_id}/award/{r2_id}",
+        headers=admin_auth["headers"],
+    )
+    assert award.status_code == 200, award.text
+    body = award.json()
+    assert body["po_no"] == "PO-RFQ-001"
+
+    # Duplicate response rejected
+    dup = client.post(
+        "/api/suppliers/rfqs/responses",
+        headers=admin_auth["headers"],
+        json={
+            "rfq_id": rfq_id, "supplier_id": sA.id,
+            "lines": [{"rfq_item_id": rfq_item_id, "unit_price": 95}],
+        },
+    )
+    assert dup.status_code == 400
+
+
+def test_vendor_scorecard_aggregates(client, admin_auth, db_session):
+    """Scorecard computes on-time rate + avg lead time + match rate."""
+    from datetime import timedelta
+    from app.modules.suppliers.models import (
+        GoodsReceipt, GoodsReceiptItem, GRStatus, POStatus,
+        PurchaseOrder, PurchaseOrderItem, Supplier, SupplierInvoice,
+        SupplierInvoiceStatus,
+    )
+    from app.modules.inventory.models import Item
+
+    sup = Supplier(code="SCORE-1", name="평점공급사")
+    item = Item(sku="SC-1", name="x", stock_qty=Decimal("0"))
+    db_session.add_all([sup, item])
+    db_session.flush()
+    order_date = date(2026, 5, 1)
+    expected = date(2026, 5, 10)
+    po = PurchaseOrder(
+        po_no="PO-SCORE-1", supplier_id=sup.id, status=POStatus.received,
+        order_date=order_date, expected_date=expected, total=Decimal("1000"),
+    )
+    po.items.append(PurchaseOrderItem(
+        item_id=item.id, quantity=Decimal("10"),
+        unit_price=Decimal("100"), received_qty=Decimal("10"),
+    ))
+    db_session.add(po)
+    db_session.flush()
+    # GR received on 2026-05-08 (on-time, 7 days lead)
+    gr = GoodsReceipt(
+        gr_no="GR-SCORE-1", po_id=po.id, status=GRStatus.posted,
+        received_date=date(2026, 5, 8),
+    )
+    gr.items.append(GoodsReceiptItem(
+        gr_id=po.id, po_item_id=po.items[0].id,
+        received_qty=Decimal("10"),
+    ))
+    db_session.add(gr)
+    db_session.add(SupplierInvoice(
+        supplier_id=sup.id, po_id=po.id,
+        vendor_invoice_no="VI-SCORE-1",
+        invoice_date=date(2026, 5, 9),
+        subtotal=Decimal("1000"), tax=Decimal("0"), total=Decimal("1000"),
+        status=SupplierInvoiceStatus.matched,
+    ))
+    db_session.commit()
+
+    res = client.get(
+        f"/api/suppliers/scorecard?supplier_id={sup.id}",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+    sc = res.json()["scorecard"][0]
+    assert sc["po_count"] == 1
+    assert sc["on_time_rate"] == 1.0
+    assert sc["avg_lead_time_days"] == 7.0
+    assert sc["match_rate"] == 1.0
+
+
+def test_health_live_and_ready(client):
+    """Liveness returns 200 always; readiness checks DB + migration."""
+    live = client.get("/api/health/live")
+    assert live.status_code == 200
+    assert live.json()["status"] == "ok"
+    ready = client.get("/api/health/ready")
+    # Migration may not be present in test DB (auto-create tables), so this
+    # could be 503 — we just verify the endpoint shape works either way.
+    assert ready.status_code in (200, 503)
+
+
+def test_celery_app_disabled_without_broker():
+    """Without CELERY_BROKER_URL the celery_app is None — synchronous path."""
+    from app.core.celery_app import celery_app
+    # Test env doesn't set the broker, so it must be None.
+    assert celery_app is None

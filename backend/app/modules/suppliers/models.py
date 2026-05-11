@@ -143,3 +143,94 @@ class SupplierInvoice(BaseEntity):
         index=True,
     )
     match_notes: Mapped[str | None] = mapped_column(String(1000))
+
+
+class RFQStatus(str, PyEnum):
+    draft = "draft"
+    sent = "sent"            # invitations dispatched
+    closed = "closed"        # responses accepted, awarded
+    cancelled = "cancelled"
+
+
+class RFQResponseStatus(str, PyEnum):
+    pending = "pending"
+    submitted = "submitted"
+    awarded = "awarded"
+    rejected = "rejected"
+
+
+class RFQ(BaseEntity):
+    """Request-for-Quotation. Invites multiple suppliers to bid on a basket
+    of items. Best response can be awarded → auto-generates a PO."""
+
+    __tablename__ = "purchase_rfqs"
+
+    rfq_no: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    due_date: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[RFQStatus] = mapped_column(
+        Enum(RFQStatus), default=RFQStatus.draft, nullable=False, index=True
+    )
+    notes: Mapped[str | None] = mapped_column(String(1000))
+    awarded_response_id: Mapped[int | None] = mapped_column(
+        ForeignKey("purchase_rfq_responses.id", use_alter=True, name="fk_rfq_awarded")
+    )
+
+    items: Mapped[list["RFQItem"]] = relationship(
+        back_populates="rfq", cascade="all, delete-orphan",
+        foreign_keys="RFQItem.rfq_id",
+    )
+
+
+class RFQItem(BaseEntity):
+    __tablename__ = "purchase_rfq_items"
+
+    rfq_id: Mapped[int] = mapped_column(
+        ForeignKey("purchase_rfqs.id"), nullable=False, index=True
+    )
+    item_id: Mapped[int] = mapped_column(ForeignKey("inv_items.id"), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
+
+    rfq: Mapped[RFQ] = relationship(back_populates="items", foreign_keys=[rfq_id])
+
+
+class RFQResponse(BaseEntity):
+    """One supplier's quote against an RFQ."""
+
+    __tablename__ = "purchase_rfq_responses"
+    __table_args__ = (
+        UniqueConstraint("rfq_id", "supplier_id", name="uq_rfq_response"),
+    )
+
+    rfq_id: Mapped[int] = mapped_column(
+        ForeignKey("purchase_rfqs.id"), nullable=False, index=True
+    )
+    supplier_id: Mapped[int] = mapped_column(
+        ForeignKey("suppliers.id"), nullable=False, index=True
+    )
+    total: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
+    lead_time_days: Mapped[int | None] = mapped_column()
+    status: Mapped[RFQResponseStatus] = mapped_column(
+        Enum(RFQResponseStatus), default=RFQResponseStatus.pending,
+        nullable=False, index=True,
+    )
+    notes: Mapped[str | None] = mapped_column(String(1000))
+    submitted_at: Mapped[date | None] = mapped_column(Date)
+
+    lines: Mapped[list["RFQResponseLine"]] = relationship(
+        back_populates="response", cascade="all, delete-orphan"
+    )
+
+
+class RFQResponseLine(BaseEntity):
+    __tablename__ = "purchase_rfq_response_lines"
+
+    response_id: Mapped[int] = mapped_column(
+        ForeignKey("purchase_rfq_responses.id"), nullable=False, index=True
+    )
+    rfq_item_id: Mapped[int] = mapped_column(
+        ForeignKey("purchase_rfq_items.id"), nullable=False
+    )
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+
+    response: Mapped[RFQResponse] = relationship(back_populates="lines")
