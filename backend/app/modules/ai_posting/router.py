@@ -282,11 +282,23 @@ def accept_proposal(
     description: str,
     proposal: Proposal,
     db: Session = Depends(get_db),
+    force_low_confidence: bool = False,
 ):
-    """Convert an accepted Proposal into a real JournalEntry."""
+    """Convert an accepted Proposal into a real JournalEntry.
+
+    Proposals with confidence < 0.5 are rejected unless `force_low_confidence`
+    is set — this prevents accidental posting of weak rule-engine fallbacks.
+    """
     from datetime import date as _date
 
     from app.modules.finance.models import JournalEntry, JournalLine
+
+    if proposal.confidence < 0.5 and not force_low_confidence:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Proposal confidence {proposal.confidence} below 0.5 — "
+                   "review the proposal or pass force_low_confidence=true",
+        )
 
     total_debit = sum((Decimal(l.debit) for l in proposal.lines), Decimal("0"))
     total_credit = sum((Decimal(l.credit) for l in proposal.lines), Decimal("0"))

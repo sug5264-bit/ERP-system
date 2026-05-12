@@ -602,6 +602,14 @@ def test_expiring_lots_endpoint(client, admin_auth, db_session):
 
 def test_asset_depreciation_idempotent(client, admin_auth, db_session):
     """Running depreciation twice for the same period skips already-posted assets."""
+    from app.modules.finance.models import Account, AccountType
+    # Seed required GL accounts so depreciation actually posts.
+    db_session.add_all([
+        Account(code="5200", name="감가상각비", type=AccountType.expense),
+        Account(code="1390", name="감가상각누계액", type=AccountType.asset),
+    ])
+    db_session.commit()
+
     res = client.post(
         "/api/assets/assets",
         headers=admin_auth["headers"],
@@ -3339,7 +3347,7 @@ def test_recipe_nutrition_aggregates(client, admin_auth, db_session):
 
 
 def test_haccp_violation_triggers_alert_flag(client, admin_auth, db_session):
-    """Out-of-limit log returns alerted=True (channels are no-op without config)."""
+    """Out-of-limit log captures channel results and computed alerted flag."""
     plan = client.post(
         "/api/fnb/haccp/plans",
         headers=admin_auth["headers"],
@@ -3363,7 +3371,10 @@ def test_haccp_violation_triggers_alert_flag(client, admin_auth, db_session):
         },
     )
     assert res.status_code == 200
-    assert res.json()["alerted"] is True
+    body = res.json()
+    # Test env has no SMTP/Slack configured → channels.slack=False → alerted=False
+    assert body["alerted"] is False
+    assert "channels" in body
 
 
 def test_e2e_quote_to_payment_to_journal(client, admin_auth, db_session):
@@ -3484,3 +3495,155 @@ def test_db_indexes_on_critical_fks(db_session):
             for c in ix["column_names"]:
                 idx_cols.add(c)
         assert col in idx_cols, f"{tbl}.{col} should be indexed"
+
+
+# --- Phase 17: audit-driven hardening regression --------------------------
+
+
+def test_depreciation_skips_when_accounts_missing(client, admin_auth, db_session):
+    """If 감가상각비/누계액 계정이 없으면 자산 자체를 건너뛴다 (silent fail 방지)."""
+    from app.modules.assets.models import Asset, DepreciationEntry
+
+    # Note: no 5200/1390 accounts seeded in this test DB
+    res = client.post(
+        "/api/assets/assets",
+        headers=admin_auth["headers"],
+        json={
+            "asset_no": "NO-GL-1", "name": "GL 미설정",
+            "acquired_date": "2026-01-01", "acquired_cost": 1200,
+            "useful_life_months": 12,
+        },
+    )
+    assert res.status_code == 200
+    aid = res.json()["id"]
+
+    run = client.post(
+        "/api/assets/depreciation/run?period_code=2026-05",
+        headers=admin_auth["headers"],
+    )
+    body = run.json()
+    # No GL accounts → skipped, accumulated_depreciation should NOT increase
+    assert body["new_entries"] == 0
+    assert body["skipped"] >= 1
+    asset = db_session.query(Asset).filter(Asset.id == aid).first()
+    db_session.refresh(asset)
+    assert float(asset.accumulated_depreciation) == 0.0
+    assert db_session.query(DepreciationEntry).filter(
+        DepreciationEntry.asset_id == aid
+    ).count() == 0
+
+
+def test_haccp_alerted_false_when_channels_unconfigured(client, admin_auth, db_session):
+    """No Slack/email configured → alerted=False (truth-in-response)."""
+    plan = client.post(
+        "/api/fnb/haccp/plans",
+        headers=admin_auth["headers"],
+        json={
+            "code": "HACCP-CH", "title": "test",
+            "ccps": [{"type": "cooking", "description": "x",
+                      "critical_limit_text": "≥ 75℃",
+                      "corrective_action": "재가열"}],
+        },
+    ).json()
+    res = client.post(
+        "/api/fnb/haccp/logs",
+        headers=admin_auth["headers"],
+        json={
+            "ccp_id": plan["ccps"][0]["id"], "measured_value": "60℃",
+            "is_within_limit": False, "corrective_action_taken": "재가열",
+        },
+    )
+    body = res.json()
+    # No SMTP/Slack configured → all channels returned False → alerted=False
+    assert body["alerted"] is False
+
+
+def test_qc_pareto_skips_zero_quantity(client, admin_auth, db_session):
+    """0개 결함은 Pareto에서 제외."""
+    plan = client.post(
+        "/api/fnb/haccp/plans",
+        headers=admin_auth["headers"],
+        json={"code": "FOR-DEF", "title": "x",
+              "ccps": [{"type": "other", "description": "x",
+                        "critical_limit_text": "-"}]},
+    ).json()
+    # Use QC plan/inspection instead
+    qcp = client.post(
+        "/api/qc/plans",
+        headers=admin_auth["headers"],
+        json={"code": "Q-PAR", "name": "x", "stage": "incoming",
+              "criteria": [{"name": "ok", "measurement_type": "boolean"}]},
+    ).json()
+    crit_id = qcp["criteria"][0]["id"]
+    insp = client.post(
+        "/api/qc/inspections",
+        headers=admin_auth["headers"],
+        json={"plan_id": qcp["id"], "quantity_inspected": 100,
+              "measurements": [{"criterion_id": crit_id, "boolean_value": False}]},
+    ).json()
+    # One real defect + one zero-quantity record
+    client.post(
+        "/api/qc/defects",
+        headers=admin_auth["headers"],
+        json={"inspection_id": insp["id"], "defect_type": "ZERO",
+              "quantity": 0, "action": "scrap"},
+    )
+    client.post(
+        "/api/qc/defects",
+        headers=admin_auth["headers"],
+        json={"inspection_id": insp["id"], "defect_type": "REAL",
+              "quantity": 10, "action": "scrap"},
+    )
+    pareto = client.get(
+        "/api/qc/defect-pareto?days=365",
+        headers=admin_auth["headers"],
+    ).json()
+    types = {d["defect_type"] for d in pareto["defects"]}
+    assert "ZERO" not in types
+    assert "REAL" in types
+
+
+def test_ai_posting_rejects_low_confidence(client, admin_auth, db_session):
+    """confidence < 0.5 → 400 unless force flag set."""
+    from app.modules.finance.models import Account, AccountType
+
+    db_session.add_all([
+        Account(code="1100", name="현금", type=AccountType.asset),
+        Account(code="5900", name="잡손실", type=AccountType.expense),
+    ])
+    db_session.commit()
+
+    # Trigger heuristic fallback (no keyword match → confidence 0.1)
+    prop = client.post(
+        "/api/ai-posting/propose",
+        headers=admin_auth["headers"],
+        json={"description": "정체불명 거래 ZZZ", "amount": 1000},
+    ).json()
+    assert prop["confidence"] < 0.5
+
+    # Direct accept should be rejected
+    rej = client.post(
+        "/api/ai-posting/accept?description=test",
+        headers=admin_auth["headers"],
+        json=prop,
+    )
+    assert rej.status_code == 400
+
+    # Force flag accepts
+    forced = client.post(
+        "/api/ai-posting/accept?description=test&force_low_confidence=true",
+        headers=admin_auth["headers"],
+        json=prop,
+    )
+    assert forced.status_code == 200
+
+
+def test_kpi_error_does_not_leak_internals(client, admin_auth, db_session):
+    """Unknown KPI returns generic 404; arbitrary errors return generic 500."""
+    res = client.get(
+        "/api/kpi/run/totally-unknown-kpi-xyz",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 404
+    # 404 message is intentional (resource id is safe)
+    assert "totally-unknown-kpi-xyz" in res.json()["error"]["message"]

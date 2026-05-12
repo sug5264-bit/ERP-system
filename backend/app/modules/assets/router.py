@@ -236,29 +236,30 @@ def run_depreciation(period_code: str, db: Session = Depends(get_db)):
             skipped += 1
             continue
         # Auto-post: Dr 감가상각비(5200) / Cr 감가상각누계액(1390).
-        # If both accounts exist we MUST post; failure aborts this asset's
-        # depreciation so accumulated_depreciation stays in sync with the GL.
-        # If either account is missing the post is a no-op (je_id=None).
+        # Both accounts MUST exist — otherwise we skip this asset entirely so
+        # accumulated_depreciation never diverges from the GL. Operators are
+        # expected to seed these account codes before running depreciation.
         from app.modules.finance.models import Account, JournalEntry, JournalLine
 
         dep_exp = db.query(Account).filter(Account.code == "5200").first()
         accum_acc = db.query(Account).filter(Account.code == "1390").first()
-        je_id: int | None = None
-        if dep_exp and accum_acc:
-            je = JournalEntry(
-                entry_date=date(year, month, 1),
-                description=f"Depreciation {asset.asset_no} {period_code}",
-                reference=f"DEP-{asset.asset_no}-{period_code}",
-            )
-            je.lines.append(
-                JournalLine(account_id=dep_exp.id, debit=amount, credit=Decimal("0"))
-            )
-            je.lines.append(
-                JournalLine(account_id=accum_acc.id, debit=Decimal("0"), credit=amount)
-            )
-            db.add(je)
-            db.flush()
-            je_id = je.id
+        if not (dep_exp and accum_acc):
+            skipped += 1
+            continue
+        je = JournalEntry(
+            entry_date=date(year, month, 1),
+            description=f"Depreciation {asset.asset_no} {period_code}",
+            reference=f"DEP-{asset.asset_no}-{period_code}",
+        )
+        je.lines.append(
+            JournalLine(account_id=dep_exp.id, debit=amount, credit=Decimal("0"))
+        )
+        je.lines.append(
+            JournalLine(account_id=accum_acc.id, debit=Decimal("0"), credit=amount)
+        )
+        db.add(je)
+        db.flush()
+        je_id = je.id
 
         entry = DepreciationEntry(
             asset_id=asset.id,

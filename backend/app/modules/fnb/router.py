@@ -318,7 +318,11 @@ def record_haccp_log(
     db.add(log)
     db.commit()
 
-    # Auto-alert on violation — best-effort multi-channel
+    # Auto-alert on violation — best-effort multi-channel. The `alerted`
+    # response field reflects whether ANY channel actually accepted the
+    # message (Slack OK or email OK). False means caller should fall back to
+    # manual notification.
+    channel_results: dict[str, bool] = {}
     if not payload.is_within_limit:
         try:
             from app.modules.notifications.channels import EmailAdapter, SlackAdapter
@@ -334,20 +338,23 @@ def record_haccp_log(
                 f"시정조치: {payload.corrective_action_taken}\n"
                 f"기록자: {user.email} @ {log.monitored_at.isoformat()}"
             )
-            SlackAdapter().send(subject, body)
-            # Email goes to a configured QA mailing list (from env). Skip when
-            # not configured.
+            channel_results["slack"] = SlackAdapter().send(subject, body)
             import os
             qa_list = os.environ.get("QA_ALERT_EMAILS", "")
             recipients = [e.strip() for e in qa_list.split(",") if e.strip()]
             if recipients:
-                EmailAdapter().send(subject, body, recipients)
+                channel_results["email"] = EmailAdapter().send(subject, body, recipients)
         except Exception:
             import logging
             logging.getLogger("erp.fnb").exception("HACCP alert dispatch failed")
+            channel_results["error"] = True
 
-    return {"id": log.id, "monitored_at": log.monitored_at.isoformat(),
-             "alerted": not payload.is_within_limit}
+    alerted = any(v is True for v in channel_results.values())
+    return {
+        "id": log.id, "monitored_at": log.monitored_at.isoformat(),
+        "alerted": alerted,
+        "channels": channel_results,
+    }
 
 
 @router.get("/haccp/logs")

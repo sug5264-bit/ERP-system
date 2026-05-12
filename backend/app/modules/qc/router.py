@@ -372,6 +372,7 @@ def defect_pareto(days: int = 30, db: Session = Depends(get_db)):
             func.coalesce(func.sum(DefectLog.quantity), 0).label("qty"),
         )
         .filter(DefectLog.reported_at >= cutoff)
+        .filter(DefectLog.quantity > 0)
         .group_by(DefectLog.defect_type)
         .order_by(func.sum(DefectLog.quantity).desc())
         .all()
