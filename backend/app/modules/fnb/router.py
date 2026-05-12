@@ -113,6 +113,52 @@ def create_recipe(payload: RecipeIn, db: Session = Depends(get_db)):
     return r
 
 
+@router.get("/recipes/{rid}/nutrition")
+def recipe_nutrition(rid: int, db: Session = Depends(get_db)):
+    """Aggregate nutrition per portion using each ingredient's per-100g facts.
+
+    Ingredients without nutrition data are skipped and listed in `unknown`.
+    """
+    r = (
+        db.query(Recipe)
+        .options(selectinload(Recipe.ingredients))
+        .filter(Recipe.id == rid)
+        .first()
+    )
+    if not r:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+    items = {
+        it.id: it for it in db.query(Item).filter(
+            Item.id.in_([i.item_id for i in r.ingredients])
+        ).all()
+    }
+    totals = {"calories": Decimal("0"), "protein_g": Decimal("0"),
+              "carbs_g": Decimal("0"), "fat_g": Decimal("0"),
+              "sodium_mg": Decimal("0")}
+    unknown: list[str] = []
+    for ing in r.ingredients:
+        it = items.get(ing.item_id)
+        if not it:
+            continue
+        if it.calories_per_100g is None:
+            unknown.append(it.sku)
+            continue
+        factor = Decimal(ing.quantity_g) / Decimal("100")
+        totals["calories"] += Decimal(it.calories_per_100g or 0) * factor
+        totals["protein_g"] += Decimal(it.protein_g_per_100g or 0) * factor
+        totals["carbs_g"] += Decimal(it.carbs_g_per_100g or 0) * factor
+        totals["fat_g"] += Decimal(it.fat_g_per_100g or 0) * factor
+        totals["sodium_mg"] += Decimal(it.sodium_mg_per_100g or 0) * factor
+    portions = Decimal(r.yield_portions) or Decimal("1")
+    per_portion = {k: float((v / portions).quantize(Decimal("0.01")))
+                    for k, v in totals.items()}
+    return {
+        "recipe_id": r.id, "code": r.code, "yield_portions": float(portions),
+        "per_portion": per_portion,
+        "unknown_ingredients": unknown,
+    }
+
+
 @router.get("/recipes/{rid}/cost")
 def recipe_cost(rid: int, db: Session = Depends(get_db)):
     """Compute per-portion cost using each ingredient's item.unit_price.
@@ -271,7 +317,37 @@ def record_haccp_log(
     )
     db.add(log)
     db.commit()
-    return {"id": log.id, "monitored_at": log.monitored_at.isoformat()}
+
+    # Auto-alert on violation — best-effort multi-channel
+    if not payload.is_within_limit:
+        try:
+            from app.modules.notifications.channels import EmailAdapter, SlackAdapter
+
+            ccp = db.query(CriticalControlPoint).filter(
+                CriticalControlPoint.id == payload.ccp_id
+            ).first()
+            subject = f"[HACCP 위반] {ccp.type.value if ccp else 'CCP'} 한계기준 초과"
+            body = (
+                f"CCP: {ccp.description if ccp else payload.ccp_id}\n"
+                f"한계기준: {ccp.critical_limit_text if ccp else '-'}\n"
+                f"측정값: {payload.measured_value}\n"
+                f"시정조치: {payload.corrective_action_taken}\n"
+                f"기록자: {user.email} @ {log.monitored_at.isoformat()}"
+            )
+            SlackAdapter().send(subject, body)
+            # Email goes to a configured QA mailing list (from env). Skip when
+            # not configured.
+            import os
+            qa_list = os.environ.get("QA_ALERT_EMAILS", "")
+            recipients = [e.strip() for e in qa_list.split(",") if e.strip()]
+            if recipients:
+                EmailAdapter().send(subject, body, recipients)
+        except Exception:
+            import logging
+            logging.getLogger("erp.fnb").exception("HACCP alert dispatch failed")
+
+    return {"id": log.id, "monitored_at": log.monitored_at.isoformat(),
+             "alerted": not payload.is_within_limit}
 
 
 @router.get("/haccp/logs")

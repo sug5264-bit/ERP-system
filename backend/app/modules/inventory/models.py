@@ -24,6 +24,12 @@ class Item(BaseEntity):
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
     stock_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"))
     barcode: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+    # Optional nutrition facts per 100g (F&B items). NULL = unknown.
+    calories_per_100g: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    protein_g_per_100g: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    carbs_g_per_100g: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    fat_g_per_100g: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    sodium_mg_per_100g: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
 
 
 class Warehouse(BaseEntity):

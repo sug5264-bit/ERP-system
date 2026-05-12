@@ -68,7 +68,9 @@ class ApprovalStep(BaseEntity):
         ForeignKey("approval_requests.id"), nullable=False, index=True
     )
     order: Mapped[int] = mapped_column(Integer, nullable=False)
-    approver_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    approver_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"), nullable=False, index=True
+    )
     status: Mapped[ApprovalStatus] = mapped_column(
         Enum(ApprovalStatus), default=ApprovalStatus.pending, nullable=False
     )

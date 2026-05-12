@@ -3296,3 +3296,191 @@ def test_haccp_plan_and_log_violation(client, admin_auth, db_session):
     ).json()
     assert len(viol) == 1
     assert viol[0]["corrective_action_taken"] == "재가열 80℃까지"
+
+
+# --- Phase 16: nutrition + HACCP alert + E2E + indexes --------------------
+
+
+def test_recipe_nutrition_aggregates(client, admin_auth, db_session):
+    from app.modules.inventory.models import Item
+
+    fg = Item(sku="N-FG", name="식단", stock_qty=Decimal("0"))
+    rice = Item(sku="N-RICE", name="쌀", stock_qty=Decimal("100"),
+                calories_per_100g=Decimal("130"),
+                protein_g_per_100g=Decimal("2.7"),
+                carbs_g_per_100g=Decimal("28"),
+                fat_g_per_100g=Decimal("0.3"),
+                sodium_mg_per_100g=Decimal("1"))
+    veg = Item(sku="N-VEG", name="야채", stock_qty=Decimal("50"))  # no nutrition
+    db_session.add_all([fg, rice, veg])
+    db_session.commit()
+
+    rec = client.post(
+        "/api/fnb/recipes",
+        headers=admin_auth["headers"],
+        json={
+            "code": "R-N1", "name": "균형식",
+            "finished_item_id": fg.id,
+            "yield_portions": 1,
+            "ingredients": [
+                {"item_id": rice.id, "quantity_g": 200},
+                {"item_id": veg.id, "quantity_g": 100},
+            ],
+        },
+    ).json()
+    n = client.get(
+        f"/api/fnb/recipes/{rec['id']}/nutrition",
+        headers=admin_auth["headers"],
+    ).json()
+    # rice 200g → 260kcal / 5.4g 단백 / 56g 탄수
+    assert abs(n["per_portion"]["calories"] - 260) < 1
+    assert abs(n["per_portion"]["protein_g"] - 5.4) < 0.1
+    assert "N-VEG" in n["unknown_ingredients"]
+
+
+def test_haccp_violation_triggers_alert_flag(client, admin_auth, db_session):
+    """Out-of-limit log returns alerted=True (channels are no-op without config)."""
+    plan = client.post(
+        "/api/fnb/haccp/plans",
+        headers=admin_auth["headers"],
+        json={
+            "code": "HACCP-ALERT", "title": "냉장보관",
+            "ccps": [{
+                "type": "storage", "description": "냉장 < 5℃",
+                "critical_limit_text": "≤ 5℃", "monitor_frequency": "1h",
+                "corrective_action": "재냉장",
+            }],
+        },
+    ).json()
+    ccp_id = plan["ccps"][0]["id"]
+    res = client.post(
+        "/api/fnb/haccp/logs",
+        headers=admin_auth["headers"],
+        json={
+            "ccp_id": ccp_id, "measured_value": "8℃",
+            "is_within_limit": False,
+            "corrective_action_taken": "냉장고 점검",
+        },
+    )
+    assert res.status_code == 200
+    assert res.json()["alerted"] is True
+
+
+def test_e2e_quote_to_payment_to_journal(client, admin_auth, db_session):
+    """End-to-end: Quote → Order → confirm → Pick → Pack → Ship →
+    Invoice → Payment → Journal entries auto-posted → cash flow positive."""
+    from app.modules.inventory.models import Item
+    from app.modules.sales.models import Customer
+    from app.modules.finance.models import Account, AccountType, JournalEntry
+
+    # Setup CoA (auto-post needs these)
+    for code, name, t in [
+        ("1100", "현금", AccountType.asset),
+        ("1200", "매출채권", AccountType.asset),
+        ("2150", "부가세예수금", AccountType.liability),
+        ("4100", "매출", AccountType.revenue),
+    ]:
+        if not db_session.query(Account).filter(Account.code == code).first():
+            db_session.add(Account(code=code, name=name, type=t))
+    item = Item(sku="E2E-1", name="E2E 상품", stock_qty=Decimal("100"),
+                unit_price=Decimal("10000"))
+    cust = Customer(name="E2E 고객")
+    db_session.add_all([item, cust])
+    db_session.commit()
+
+    # 1. Quote → 2. Convert to order
+    q = client.post(
+        "/api/billing/quotes",
+        headers=admin_auth["headers"],
+        json={"quote_no": "Q-E2E-1", "customer_id": cust.id,
+              "items": [{"item_id": item.id, "quantity": 5,
+                         "unit_price": 10000}]},
+    ).json()
+    so_conv = client.post(
+        f"/api/billing/quotes/{q['id']}/convert",
+        headers=admin_auth["headers"],
+    ).json()
+    so_id = so_conv["order_id"]
+
+    # 3. Confirm SO (deducts stock)
+    client.post(f"/api/sales/orders/{so_id}/confirm",
+                 headers=admin_auth["headers"])
+
+    # 4. Pick list → start → complete → 5. Ship
+    pl = client.post(f"/api/wms/pick-lists/from-order/{so_id}",
+                      headers=admin_auth["headers"]).json()
+    client.post(f"/api/wms/pick-lists/{pl['id']}/start",
+                 headers=admin_auth["headers"])
+    client.post(
+        f"/api/wms/pick-lists/{pl['id']}/complete",
+        headers=admin_auth["headers"],
+        json={"items": [{"item_id": item.id, "picked_qty": 5}]},
+    )
+    sh = client.post(
+        "/api/wms/shipments",
+        headers=admin_auth["headers"],
+        json={"shipment_no": "SH-E2E-1", "pick_list_id": pl["id"]},
+    ).json()
+    client.post(f"/api/wms/shipments/{sh['id']}/ship",
+                 headers=admin_auth["headers"])
+    client.post(f"/api/wms/shipments/{sh['id']}/deliver",
+                 headers=admin_auth["headers"])
+
+    # 6. Invoice + 7. Issue (auto-post Dr AR / Cr Rev + VAT)
+    inv = client.post(
+        "/api/billing/invoices",
+        headers=admin_auth["headers"],
+        json={
+            "invoice_no": "INV-E2E-1", "customer_id": cust.id,
+            "sales_order_id": so_id,
+            "items": [{"description": "E2E 상품 5개", "item_id": item.id,
+                       "quantity": 5, "unit_price": 10000}],
+            "tax_rate": 0.10,
+        },
+    ).json()
+    client.post(f"/api/billing/invoices/{inv['id']}/issue",
+                 headers=admin_auth["headers"])
+
+    # 8. Payment (auto-post Dr Cash / Cr AR)
+    pay = client.post(
+        "/api/billing/payments",
+        headers=admin_auth["headers"],
+        json={"invoice_id": inv["id"], "amount": 55000},
+    )
+    assert pay.status_code == 200
+
+    # 9. Verify auto-posted JEs exist
+    je_inv = db_session.query(JournalEntry).filter(
+        JournalEntry.reference == f"INV-{inv['invoice_no']}"
+    ).first()
+    assert je_inv is not None, "invoice issuance JE missing"
+    je_pay = db_session.query(JournalEntry).filter(
+        JournalEntry.reference.like("PAY-%")
+    ).order_by(JournalEntry.id.desc()).first()
+    assert je_pay is not None, "payment JE missing"
+
+    # 10. Cash flow shows positive operating
+    cf = client.get(
+        "/api/finance/cash-flow?start=2026-01-01&end=2027-12-31",
+        headers=admin_auth["headers"],
+    ).json()
+    # Operating buckets revenue → +; we received cash so should be positive
+    assert cf["net_change"] > 0
+
+
+def test_db_indexes_on_critical_fks(db_session):
+    """Sanity: critical FK columns are indexed (perf protection)."""
+    from sqlalchemy import inspect
+    insp = inspect(db_session.bind)
+    expected = [
+        ("fin_journal_lines", "entry_id"),
+        ("approval_steps", "approver_id"),
+        ("contracts", "customer_id"),
+        ("crm_opportunities", "customer_id"),
+    ]
+    for tbl, col in expected:
+        idx_cols: set[str] = set()
+        for ix in insp.get_indexes(tbl):
+            for c in ix["column_names"]:
+                idx_cols.add(c)
+        assert col in idx_cols, f"{tbl}.{col} should be indexed"

@@ -42,8 +42,12 @@ class JournalEntry(BaseEntity):
 class JournalLine(BaseEntity):
     __tablename__ = "fin_journal_lines"
 
-    entry_id: Mapped[int] = mapped_column(ForeignKey("fin_journal_entries.id"), nullable=False)
-    account_id: Mapped[int] = mapped_column(ForeignKey("fin_accounts.id"), nullable=False)
+    entry_id: Mapped[int] = mapped_column(
+        ForeignKey("fin_journal_entries.id"), nullable=False, index=True
+    )
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("fin_accounts.id"), nullable=False, index=True
+    )
     debit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     credit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     memo: Mapped[str | None] = mapped_column(String(255))

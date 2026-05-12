@@ -47,7 +47,9 @@ class Opportunity(BaseEntity):
     __tablename__ = "crm_opportunities"
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    customer_id: Mapped[int | None] = mapped_column(ForeignKey("sales_customers.id"))
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("sales_customers.id"), index=True
+    )
     lead_id: Mapped[int | None] = mapped_column(ForeignKey("crm_leads.id"))
     stage: Mapped[OpportunityStage] = mapped_column(
         Enum(OpportunityStage), default=OpportunityStage.prospecting, nullable=False, index=True

@@ -39,7 +39,9 @@ class Contract(BaseEntity):
     )
     counterparty: Mapped[str] = mapped_column(String(200), nullable=False)
     # Either customer/supplier/employee linkage (one of)
-    customer_id: Mapped[int | None] = mapped_column(ForeignKey("sales_customers.id"))
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("sales_customers.id"), index=True
+    )
     supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"))
     employee_id: Mapped[int | None] = mapped_column(ForeignKey("hr_employees.id"))
 
