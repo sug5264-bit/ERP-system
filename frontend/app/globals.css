@@ -4,26 +4,56 @@
 
 :root {
   color-scheme: light dark;
+  /* WELLgreen brand tokens (also exposed as CSS vars for non-Tailwind files) */
+  --brand-green: #87a53c;
+  --brand-green-dark: #556a24;
+  --brand-brown: #4b1e00;
+  --brand-brown-light: #8a4d22;
+  --brand-gold: #a5874b;
+  --brand-silver: #a5a5a5;
 }
 
 body {
-  @apply bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100;
+  @apply bg-brand-50/40 text-brown-900 dark:bg-slate-950 dark:text-slate-100;
 }
 
-/* Map old slate-900 button styles to brand green */
+/* Buttons & nav surfaces use WELLgreen accents */
 button.bg-slate-900,
 .bg-slate-900 {
-  @apply bg-brand-700;
+  @apply bg-brand-600;
 }
 
 button.bg-slate-900:hover,
 .hover\:bg-slate-800:hover {
-  @apply bg-brand-800;
+  @apply bg-brand-700;
 }
 
-/* Sidebar uses dark-green tone instead of pure slate */
+/* Sidebar = deep dark-brown tone (brand brown), matching the wordmark */
 aside.bg-slate-900 {
-  @apply bg-brand-900;
+  background-color: var(--brand-brown);
+}
+
+/* "Emerald" classes used throughout get re-mapped to the brand olive-green */
+.bg-emerald-700 { background-color: var(--brand-green); }
+.bg-emerald-700:hover, .hover\:bg-emerald-800:hover { background-color: var(--brand-green-dark); }
+.text-emerald-700 { color: var(--brand-green-dark); }
+.border-emerald-700 { border-color: var(--brand-green); }
+
+/* Section headings + nav text in body get the brand brown */
+.text-brand-heading { color: var(--brand-brown); }
+
+/* H1 page titles default to the brand brown (overridable per-page) */
+h1.text-2xl.font-semibold {
+  color: var(--brand-brown);
+}
+
+/* Slate-100 hover targets on light buttons → brand-50 wash */
+.hover\:bg-slate-100:hover { background-color: #ecf3da; }
+.hover\:bg-slate-200:hover { background-color: #d6e6b6; }
+
+/* Inputs gain a subtle brand focus ring instead of stock blue */
+input:focus, select:focus, textarea:focus {
+  outline-color: var(--brand-green);
 }
 
 /* Dark mode mapping for surfaces, forms, tables */

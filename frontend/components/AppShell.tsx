@@ -14,14 +14,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <div className="flex">
         <Sidebar />
         <main className="flex-1 flex flex-col">
-          <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 px-6 py-2 flex items-center gap-3">
+          <header className="bg-white dark:bg-slate-900 border-b-2 border-brand-500/40 dark:border-slate-700 px-6 py-2 flex items-center gap-3 shadow-sm">
             <SearchBar />
             <div className="flex-1" />
             <TenantPicker />
             <CurrencyPicker />
             <button
               onClick={toggle}
-              className="px-2 py-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-sm"
+              className="px-2 py-1 rounded hover:bg-brand-50 dark:hover:bg-slate-800 text-sm text-brown-700 dark:text-slate-200"
               title="Toggle theme"
             >
               {theme === "dark" ? "☀️" : "🌙"}
