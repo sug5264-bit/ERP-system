@@ -1,0 +1,47 @@
+# Caddy 2 — automatic HTTPS via Let's Encrypt.
+# Environment substitution happens at container start.
+{
+    email {$LETSENCRYPT_EMAIL}
+    # Use ZeroSSL as a fallback issuer if LE rate-limits.
+    acme_ca https://acme-v02.api.letsencrypt.org/directory
+}
+
+{$PUBLIC_DOMAIN} {
+    encode zstd gzip
+
+    # Security headers (additive to FastAPI's security_headers middleware).
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        # Remove the Server header.
+        -Server
+    }
+
+    # Backend: API + WebSocket + Prometheus metrics.
+    @api {
+        path /api/* /ws /metrics
+    }
+    handle @api {
+        # Bump body size for file uploads (attachments, OCR).
+        request_body {
+            max_size 50MB
+        }
+        reverse_proxy backend:8000 {
+            health_uri /api/health/live
+            health_interval 30s
+            health_timeout 5s
+        }
+    }
+
+    # Frontend: Next.js SPA + static assets.
+    handle {
+        reverse_proxy frontend:3000
+    }
+
+    log {
+        output stdout
+        format json
+    }
+}

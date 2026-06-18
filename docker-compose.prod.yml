@@ -1,0 +1,65 @@
+# Production overlay — adds HTTPS termination (Caddy + automatic Let's
+# Encrypt) and a nightly PG dump cron container. Use together with the
+# base file:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+services:
+  db:
+    # Don't expose Postgres to the public network in production.
+    ports: []
+    restart: unless-stopped
+
+  backend:
+    ports: []  # only reachable via the proxy
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      SEED_DEMO_USERS: "0"
+      AUTO_CREATE_TABLES: "0"
+
+  frontend:
+    ports: []  # proxied
+    restart: unless-stopped
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?PUBLIC_DOMAIN is required}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:?LETSENCRYPT_EMAIL is required}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - frontend
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-erp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-erp}
+      PGHOST: db
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - ./deploy/backup.sh:/usr/local/bin/backup.sh:ro
+      - backup_data:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "while true; do
+         /usr/local/bin/backup.sh || true;
+         sleep 86400;
+       done"
+
+volumes:
+  caddy_data:
+  caddy_config:
+  backup_data:

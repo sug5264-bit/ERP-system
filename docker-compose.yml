@@ -1,16 +1,22 @@
+# Local development stack — Option A (PoC) baseline.
+# For production deployment with HTTPS + automated backups, use:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Required environment (use scripts/gen-secrets.sh to generate):
+#   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB / JWT_SECRET
 services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: erp
-      POSTGRES_PASSWORD: erp
-      POSTGRES_DB: erp
+      POSTGRES_USER: ${POSTGRES_USER:-erp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-erp}
+      POSTGRES_DB: ${POSTGRES_DB:-erp}
     ports:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U erp"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-erp}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -20,24 +26,46 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+psycopg2://erp:erp@db:5432/erp
-      JWT_SECRET: dev-secret-change-me
-      CORS_ORIGINS: '["http://localhost:3000"]'
-      AUTO_CREATE_TABLES: "0"
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-erp}:${POSTGRES_PASSWORD:-erp}@db:5432/${POSTGRES_DB:-erp}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me-32-bytes-minimum}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      CORS_ORIGINS: ${CORS_ORIGINS:-'["http://localhost:3000"]'}
+      AUTO_CREATE_TABLES: ${AUTO_CREATE_TABLES:-0}
+      SEED_DEMO_USERS: ${SEED_DEMO_USERS:-1}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-noreply@erp.local}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
     depends_on:
       db:
         condition: service_healthy
     command: >
       sh -c "alembic upgrade head &&
              python scripts/seed.py &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+             gunicorn -k uvicorn.workers.UvicornWorker \
+               --workers ${GUNICORN_WORKERS:-2} \
+               --threads ${GUNICORN_THREADS:-4} \
+               --timeout ${GUNICORN_TIMEOUT:-60} \
+               --access-logfile - --error-logfile - \
+               --bind 0.0.0.0:8000 app.main:app"
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://backend:8000}
     ports:
       - "3000:3000"
     environment:
-      NEXT_PUBLIC_API_BASE: http://backend:8000
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://backend:8000}
     depends_on:
       - backend
 
