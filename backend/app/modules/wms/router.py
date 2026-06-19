@@ -538,28 +538,25 @@ def shipment_transaction_statement_pdf(
 def shipment_acceptance_receipt_pdf(
     ship_id: int, db: Session = Depends(get_db)
 ):
-    """인수증 PDF — 거래명세서와 동일 레이아웃, 제목만 '인수증', 1부."""
+    """인수증 PDF — 가격 정보 일체 숨김 (단가/공급가액/부가세/합계/잔액 X).
+
+    수령인에게 마진/원가가 노출되지 않도록 함. 수량과 품명만 보고 사인/도장.
+    """
     from app.core.docs_pdf import render_acceptance_receipt_v2
 
     s = db.query(Shipment).filter(Shipment.id == ship_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Shipment not found")
-    company, customer, cp = _resolve_company_and_customer(db, s)
+    company, customer, _ = _resolve_company_and_customer(db, s)
     lines = _shipment_to_line_items(db, s)
 
     doc_date = (s.delivered_at or s.shipped_at or s.packed_at or datetime.utcnow()).date()
-    opening, _, _ = _customer_balances(db, _customer_id_of(db, s), doc_date)
-    this_total = sum((Decimal(l.supply_amount) + Decimal(l.tax_amount) for l in lines), Decimal(0))
-
     pdf = render_acceptance_receipt_v2(
         company,
         customer,
         lines,
         serial_no=_serial_for(s, doc_date),
         doc_date=doc_date,
-        bank_info=_txn_bank_info_line(cp),
-        opening_balance=opening,
-        closing_balance=opening + this_total,
     )
     return _pdf_response(pdf, f"인수증_{s.shipment_no}.pdf")
 

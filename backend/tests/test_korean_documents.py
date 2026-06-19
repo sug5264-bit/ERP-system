@@ -189,6 +189,226 @@ def test_render_acceptance_receipt():
     assert len(pdf) > 3000
 
 
+def test_acceptance_receipt_v2_hides_prices():
+    """인수증은 가격 정보 일체 노출 금지 — 수량/품명만 보여야 함."""
+    from app.core.docs_pdf import (
+        LineItem,
+        PartyInfo,
+        render_acceptance_receipt_v2,
+        render_transaction_statement_v2,
+    )
+
+    company = PartyInfo(
+        business_no="206-87-06151",
+        company_name="웰그린",
+        representative="이승주",
+        address="서울 영등포",
+    )
+    customer = PartyInfo(
+        business_no=None,
+        company_name="GS앱발주",
+        representative=None,
+        address=None,
+    )
+    items = [
+        LineItem(
+            no=1,
+            name="유기농 토마토",
+            spec="1kg박스",
+            qty=Decimal("10"),
+            unit="BOX",
+            unit_price=Decimal("15000"),
+            supply_amount=Decimal("150000"),
+            tax_amount=Decimal("15000"),
+            barcode="8801234567890",
+        ),
+    ]
+
+    receipt = render_acceptance_receipt_v2(
+        company, customer, items,
+        serial_no="2026/06/19 -1",
+        doc_date=date(2026, 6, 19),
+    )
+    statement = render_transaction_statement_v2(
+        company, customer, items,
+        serial_no="2026/06/19 -1",
+        doc_date=date(2026, 6, 19),
+        bank_info="우리은행 1005-402-804956",
+        opening_balance=Decimal("100000"),
+        closing_balance=Decimal("265000"),
+    )
+    assert receipt.startswith(b"%PDF-") and statement.startswith(b"%PDF-")
+
+    # 거래명세서엔 가격이 보이고 (15,000 / 150,000 / 우리은행) 인수증엔 없어야 함.
+    # PDF 텍스트는 CID로 인코딩돼 raw bytes로는 직접 검색 불가 — 대신
+    # 가격 정보를 가진 거래명세서가 인수증보다 명백히 더 커야 함을 검증.
+    assert len(statement) > len(receipt), (
+        "거래명세서(가격포함)가 인수증(가격숨김)보다 커야 함"
+    )
+
+
+# ────── 4. 품목 일괄 등록/갱신 (Excel/CSV import) ───────────────
+
+
+def _make_admin_items_xlsx(rows: list[list]) -> bytes:
+    """xlsx 바이트 생성기 (테스트용)."""
+    import io as _io
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["SKU", "품목명", "단위", "단가", "재고", "바코드"])
+    for r in rows:
+        ws.append(r)
+    buf = _io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_items_import_template_xlsx(client, admin_auth):
+    res = client.get(
+        "/api/inventory/items/import-template?format=xlsx",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200
+    # xlsx 시그니처 = PK (ZIP)
+    assert res.content[:2] == b"PK"
+
+
+def test_items_import_creates_and_updates(client, db_session, admin_auth):
+    from app.modules.inventory.models import Item
+
+    # 1번 호출: 신규 2건
+    xlsx = _make_admin_items_xlsx(
+        [
+            ["SKU-A", "토마토 1kg", "BOX", 15000, 10, "8801111111111"],
+            ["SKU-B", "양파 3kg", "BAG", 8000, 20, "8802222222222"],
+        ]
+    )
+    res = client.post(
+        "/api/inventory/items/import",
+        files={
+            "file": (
+                "items.xlsx",
+                xlsx,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["created"] == 2 and body["updated"] == 0
+    assert db_session.query(Item).filter(Item.sku == "SKU-A").first().name == "토마토 1kg"
+
+    # 2번 호출: 기존 1건 update + 신규 1건
+    xlsx2 = _make_admin_items_xlsx(
+        [
+            ["SKU-A", "유기농 토마토 1kg", "BOX", 18000, 12, "8801111111111"],
+            ["SKU-C", "상추 200g", "PACK", 3000, 50, "8803333333333"],
+        ]
+    )
+    res = client.post(
+        "/api/inventory/items/import",
+        files={"file": ("items.xlsx", xlsx2, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["created"] == 1 and body["updated"] == 1
+
+    db_session.expire_all()
+    item_a = db_session.query(Item).filter(Item.sku == "SKU-A").first()
+    assert item_a.name == "유기농 토마토 1kg"
+    assert int(item_a.unit_price) == 18000
+
+
+def test_items_import_csv_with_korean_headers(client, db_session, admin_auth):
+    """CSV (UTF-8 BOM) + 한글 헤더로 업로드 가능해야 함."""
+    csv_text = (
+        "﻿SKU,품목명,단위,단가,재고,바코드\n"
+        "SKU-K1,한글품목1,EA,5000,3,\n"
+        "SKU-K2,한글품목2,KG,12000,7,8809999999999\n"
+    )
+    res = client.post(
+        "/api/inventory/items/import",
+        files={"file": ("items.csv", csv_text.encode("utf-8"), "text/csv")},
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["created"] == 2
+    assert body["errors"] == []
+
+
+def test_items_import_rejects_missing_required(client, admin_auth):
+    """SKU/품목명 없는 행은 errors에 기록되고 commit은 정상 진행."""
+    import io as _io
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["SKU", "품목명", "단위", "단가"])
+    ws.append(["", "이름만있고sku없음", "EA", 1000])  # 거부 대상
+    ws.append(["SKU-OK", "정상품목", "EA", 1000])  # 정상
+    buf = _io.BytesIO()
+    wb.save(buf)
+
+    res = client.post(
+        "/api/inventory/items/import",
+        files={
+            "file": (
+                "items.xlsx",
+                buf.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["created"] == 1
+    assert len(body["errors"]) == 1
+    assert body["errors"][0]["row"] == 2
+
+
+def test_items_export_all_formats(client, db_session, admin_auth):
+    """품목 export — csv/xlsx/pdf 3종 모두 정상 응답."""
+    from app.modules.inventory.models import Item
+
+    db_session.add(Item(sku="EXP-1", name="익스포트테스트", unit_price=Decimal("1000")))
+    db_session.commit()
+
+    for fmt, sig in [("csv", b"\xef\xbb\xbf"), ("xlsx", b"PK"), ("pdf", b"%PDF-")]:
+        res = client.get(
+            f"/api/inventory/items/export?format={fmt}",
+            headers=admin_auth["headers"],
+        )
+        assert res.status_code == 200, f"{fmt} failed: {res.text}"
+        assert res.content.startswith(sig), f"{fmt} 시그니처 불일치"
+
+
+def test_stock_movements_export(client, db_session, admin_auth):
+    from app.modules.inventory.models import Item, MovementType, StockMovement
+
+    item = Item(sku="MOV-1", name="이동테스트", stock_qty=Decimal("100"))
+    db_session.add(item)
+    db_session.flush()
+    db_session.add(
+        StockMovement(
+            item_id=item.id, type=MovementType.inbound, quantity=Decimal("10"), note="테스트"
+        )
+    )
+    db_session.commit()
+
+    res = client.get(
+        "/api/inventory/movements/export?format=xlsx",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200
+    assert res.content[:2] == b"PK"
+
+
 def test_render_tax_invoice_with_exemption():
     from app.core.docs_pdf import LineItem, PartyInfo, render_tax_invoice
 

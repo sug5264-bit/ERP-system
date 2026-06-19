@@ -634,15 +634,28 @@ def _txn_header_block(
     return outer
 
 
-def _txn_amount_strip(total_with_tax: Decimal) -> Table:
-    """'금 액 : XX원 정             (₩XXX)' 가로 띠."""
-    rows = [
-        [
-            _para("금  액 :", size=11, align="LEFT", bold=True),
-            _para(f"{_korean_amount(int(total_with_tax))}원 정", size=11),
-            _para(f"(₩{_fmt_money(total_with_tax)})", size=11, align="RIGHT", bold=True),
+def _txn_amount_strip(total_with_tax: Decimal, hide_amount: bool = False) -> Table:
+    """'금 액 : XX원 정             (₩XXX)' 가로 띠.
+
+    hide_amount=True (인수증) 이면 금액을 표시하지 않음 — 수령인에게
+    원가/마진이 노출되지 않도록.
+    """
+    if hide_amount:
+        rows = [
+            [
+                _para("금  액 :", size=11, align="LEFT", bold=True),
+                _para("─", size=11, align="CENTER"),
+                _para(" ", size=11, align="RIGHT"),
+            ]
         ]
-    ]
+    else:
+        rows = [
+            [
+                _para("금  액 :", size=11, align="LEFT", bold=True),
+                _para(f"{_korean_amount(int(total_with_tax))}원 정", size=11),
+                _para(f"(₩{_fmt_money(total_with_tax)})", size=11, align="RIGHT", bold=True),
+            ]
+        ]
     t = Table(rows, colWidths=[20 * mm, 110 * mm, 50 * mm], rowHeights=[8 * mm])
     t.setStyle(
         TableStyle(
@@ -659,8 +672,17 @@ def _txn_amount_strip(total_with_tax: Decimal) -> Table:
     return t
 
 
-def _txn_lines_table(items: Sequence[LineItem], *, min_rows: int = _TXN_MIN_ROWS) -> Table:
-    """품목 테이블 — 빈 행 보강(min_rows)."""
+def _txn_lines_table(
+    items: Sequence[LineItem],
+    *,
+    min_rows: int = _TXN_MIN_ROWS,
+    hide_prices: bool = False,
+) -> Table:
+    """품목 테이블 — 빈 행 보강(min_rows).
+
+    hide_prices=True (인수증) 이면 단가/공급가액/부가세 칸 비움. 컬럼 자체는
+    유지하여 거래명세서와 동일한 레이아웃(수령자가 빠진 항목 인지 가능).
+    """
     headers = ["바코드", "품목명", "규격", "단위", "수량", "단가", "공급가액", "부가세", "적요"]
     col_widths = [
         26 * mm,
@@ -675,6 +697,12 @@ def _txn_lines_table(items: Sequence[LineItem], *, min_rows: int = _TXN_MIN_ROWS
     ]
     data = [[_para(h, size=8, align="CENTER", bold=True) for h in headers]]
     for it in items:
+        if hide_prices:
+            up_text = sup_text = tax_text = ""
+        else:
+            up_text = _fmt_money(it.unit_price) if it.unit_price else ""
+            sup_text = _fmt_money(it.supply_amount) if it.supply_amount else ""
+            tax_text = _fmt_money(it.tax_amount) if it.tax_amount else ""
         data.append(
             [
                 _para(it.barcode or "", size=8, align="CENTER"),
@@ -682,9 +710,9 @@ def _txn_lines_table(items: Sequence[LineItem], *, min_rows: int = _TXN_MIN_ROWS
                 _para(it.spec or "", size=8, align="CENTER"),
                 _para(it.unit, size=8, align="CENTER"),
                 _para(_fmt_money(it.qty), size=9, align="RIGHT"),
-                _para(_fmt_money(it.unit_price) if it.unit_price else "", size=9, align="RIGHT"),
-                _para(_fmt_money(it.supply_amount) if it.supply_amount else "", size=9, align="RIGHT"),
-                _para(_fmt_money(it.tax_amount) if it.tax_amount else "", size=9, align="RIGHT"),
+                _para(up_text, size=9, align="RIGHT"),
+                _para(sup_text, size=9, align="RIGHT"),
+                _para(tax_text, size=9, align="RIGHT"),
                 _para(it.remark or "", size=8, align="CENTER"),
             ]
         )
@@ -709,19 +737,29 @@ def _txn_lines_table(items: Sequence[LineItem], *, min_rows: int = _TXN_MIN_ROWS
 
 
 def _txn_totals_strip(
-    total_qty: Decimal, supply: Decimal, tax: Decimal
+    total_qty: Decimal,
+    supply: Decimal,
+    tax: Decimal,
+    *,
+    hide_prices: bool = False,
 ) -> Table:
-    """합계 띠 — 수량 / 공급가액 / VAT / 합계 / 인수 (인)."""
+    """합계 띠. hide_prices=True면 공급가액/VAT/합계는 빈칸 (수량/인수만 표기)."""
+    if hide_prices:
+        sup_text = vat_text = total_text = ""
+    else:
+        sup_text = _fmt_money(supply)
+        vat_text = _fmt_money(tax)
+        total_text = _fmt_money(supply + tax)
     rows = [
         [
             _para("수량", size=9, bold=True, align="CENTER"),
             _para(_fmt_money(total_qty), size=10, align="RIGHT"),
             _para("공급가액", size=9, bold=True, align="CENTER"),
-            _para(_fmt_money(supply), size=10, align="RIGHT"),
+            _para(sup_text, size=10, align="RIGHT"),
             _para("VAT", size=9, bold=True, align="CENTER"),
-            _para(_fmt_money(tax), size=10, align="RIGHT"),
+            _para(vat_text, size=10, align="RIGHT"),
             _para("합계", size=9, bold=True, align="CENTER"),
-            _para(_fmt_money(supply + tax), size=10, align="RIGHT"),
+            _para(total_text, size=10, align="RIGHT"),
             _para("인수", size=9, bold=True, align="CENTER"),
             _para("                인", size=9, align="RIGHT"),
         ]
@@ -779,6 +817,7 @@ def _txn_one_copy(
     bank_info: str | None,
     opening_balance: Decimal | None,
     closing_balance: Decimal | None,
+    hide_prices: bool = False,
 ) -> list:
     """거래명세서 1부 (보관용 또는 인수용) 구성 요소를 반환."""
     total_qty = sum((Decimal(i.qty) for i in items), Decimal(0))
@@ -789,13 +828,17 @@ def _txn_one_copy(
     out: list = []
     out.append(_txn_header_block(company, customer, title=title, serial_no=serial_no))
     out.append(Spacer(1, 1 * mm))
-    out.append(_txn_amount_strip(total))
+    out.append(_txn_amount_strip(total, hide_amount=hide_prices))
     out.append(Spacer(1, 1 * mm))
-    out.append(_txn_lines_table(items))
+    out.append(_txn_lines_table(items, hide_prices=hide_prices))
     out.append(Spacer(1, 1 * mm))
-    out.append(_txn_totals_strip(total_qty, supply, tax))
+    out.append(_txn_totals_strip(total_qty, supply, tax, hide_prices=hide_prices))
     out.append(Spacer(1, 1 * mm))
-    out += _txn_footer(bank_info, opening_balance, closing_balance)
+    # 인수증에서는 입금계좌/잔액도 가리는 게 자연스러움 (가격 단서)
+    if hide_prices:
+        out.append(_para("─" * 60, size=8))
+    else:
+        out += _txn_footer(bank_info, opening_balance, closing_balance)
     return out
 
 
@@ -811,12 +854,14 @@ def render_transaction_statement_v2(
     closing_balance: Decimal | None = None,
     copies: int = 2,
     title: str = "거래명세서",
+    hide_prices: bool = False,
 ) -> bytes:
     """실무 표준 거래명세서 (A4 1장 N부, 절취선 분리).
 
     - copies=2: 상단 보관용 + 하단 인수용 (default)
     - 전잔/후잔: 외상매출금 잔액 (None이면 빈칸)
     - bank_info: 1줄 문자열 ("우리은행 1005-... (주)웰그린")
+    - hide_prices: 단가/공급가액/부가세/합계/잔액 모두 숨김 (인수증용)
     """
     story: list = []
     for i in range(copies):
@@ -829,6 +874,7 @@ def render_transaction_statement_v2(
             bank_info=bank_info,
             opening_balance=opening_balance,
             closing_balance=closing_balance,
+            hide_prices=hide_prices,
         )
         if i < copies - 1:
             story.append(Spacer(1, 4 * mm))
@@ -844,22 +890,24 @@ def render_acceptance_receipt_v2(
     *,
     serial_no: str,
     doc_date: date,
-    bank_info: str | None = None,
-    opening_balance: Decimal | None = None,
-    closing_balance: Decimal | None = None,
 ) -> bytes:
-    """인수증 — 거래명세서와 동일 레이아웃, 제목만 변경, 1부."""
+    """인수증 — 거래명세서와 동일 레이아웃, 가격 정보 일체 숨김, 1부.
+
+    수령인에게 단가/공급가액/부가세/합계/입금계좌/잔액 모두 노출 안 됨.
+    수량과 품명만 확인 후 서명/도장 받는 용도.
+    """
     return render_transaction_statement_v2(
         company,
         customer,
         items,
         serial_no=serial_no,
         doc_date=doc_date,
-        bank_info=bank_info,
-        opening_balance=opening_balance,
-        closing_balance=closing_balance,
+        bank_info=None,
+        opening_balance=None,
+        closing_balance=None,
         copies=1,
         title="인  수  증",
+        hide_prices=True,
     )
 
 

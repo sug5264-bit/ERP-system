@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.auth import (
@@ -37,8 +37,9 @@ def list_items(params: PageParams = Depends(), db: Session = Depends(get_db)):
 
 @router.get("/items/export")
 def export_items(format: str = Query("csv"), inline: bool = Query(False), db: Session = Depends(get_db)):
+    """품목 리스트 다운로드 — format=csv|xlsx|pdf 지원."""
     items = service.list_items(db)
-    headers = ["SKU", "품목명", "단위", "단가", "재고", "재고가치"]
+    headers = ["SKU", "품목명", "단위", "단가", "재고", "재고가치", "바코드"]
     rows = [
         [
             i.sku,
@@ -47,10 +48,215 @@ def export_items(format: str = Query("csv"), inline: bool = Query(False), db: Se
             float(i.unit_price),
             float(i.stock_qty),
             float(i.unit_price) * float(i.stock_qty),
+            i.barcode or "",
         ]
         for i in items
     ]
     return export_table(rows, headers, "items", format, inline=inline)
+
+
+@router.get("/items/import-template")
+def items_import_template(format: str = Query("xlsx")):
+    """품목 일괄등록 양식 다운로드 (사용자가 채워서 import에 업로드).
+
+    헤더 순서 = import 파서가 기대하는 순서. 첫 행에 예시 1줄 포함.
+    """
+    headers = ["SKU", "품목명", "단위", "단가", "재고", "바코드"]
+    sample = [["SKU-001", "예시 품목", "EA", 10000, 0, "8801234567890"]]
+    return export_table(sample, headers, "items_import_template", format)
+
+
+@router.post(
+    "/items/import",
+    dependencies=[Depends(require_module_role("inventory", "admin"))],
+)
+async def import_items(
+    file: UploadFile = File(...),
+    upsert: bool = Query(
+        True, description="True면 SKU 중복 시 update, False면 중복 시 skip"
+    ),
+    db: Session = Depends(get_db),
+):
+    """품목 일괄 등록/갱신 (Excel .xlsx 또는 CSV).
+
+    헤더(첫 행) 필수 컬럼: SKU, 품목명, 단위, 단가
+    선택 컬럼: 재고, 바코드
+    헤더 이름은 한글/영문 모두 인식 (대소문자 무관).
+
+    응답: {"created": N, "updated": N, "skipped": N, "errors": [{row, reason}]}
+    """
+    import csv as _csv
+    import io as _io
+    from decimal import Decimal as _D, InvalidOperation
+
+    raw = await file.read()
+    filename = (file.filename or "").lower()
+
+    # 헤더 별칭 (한글/영문 모두 허용)
+    alias = {
+        "sku": "sku", "코드": "sku", "품목코드": "sku",
+        "name": "name", "품목명": "name", "이름": "name", "품명": "name",
+        "unit": "unit", "단위": "unit",
+        "unit_price": "unit_price", "단가": "unit_price", "가격": "unit_price",
+        "stock_qty": "stock_qty", "재고": "stock_qty", "수량": "stock_qty",
+        "barcode": "barcode", "바코드": "barcode",
+    }
+
+    # ── 행 추출 (xlsx 또는 csv) ───────────────────────────────────
+    rows: list[dict] = []
+    try:
+        if filename.endswith(".xlsx") or filename.endswith(".xls"):
+            from openpyxl import load_workbook
+
+            wb = load_workbook(_io.BytesIO(raw), data_only=True)
+            ws = wb.active
+            it = ws.iter_rows(values_only=True)
+            try:
+                header_row = next(it)
+            except StopIteration:
+                raise HTTPException(status_code=400, detail="빈 파일입니다.")
+            keys = [
+                alias.get(str(h or "").strip().lower(), None) for h in header_row
+            ]
+            for raw_row in it:
+                if all(c is None or str(c).strip() == "" for c in raw_row):
+                    continue  # 빈 행 skip
+                rows.append(
+                    {k: v for k, v in zip(keys, raw_row) if k is not None}
+                )
+        else:
+            # CSV (UTF-8 with optional BOM)
+            text = raw.decode("utf-8-sig")
+            reader = _csv.reader(_io.StringIO(text))
+            header_row = next(reader, None)
+            if not header_row:
+                raise HTTPException(status_code=400, detail="빈 파일입니다.")
+            keys = [alias.get(h.strip().lower(), None) for h in header_row]
+            for raw_row in reader:
+                if not any(c.strip() for c in raw_row):
+                    continue
+                rows.append(
+                    {k: v for k, v in zip(keys, raw_row) if k is not None}
+                )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400, detail=f"파일을 읽을 수 없습니다: {exc}"
+        )
+
+    # ── 헤더 검증 ────────────────────────────────────────────────
+    required = {"sku", "name"}
+    seen_keys = {k for r in rows for k in r.keys()}
+    missing = required - seen_keys
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"필수 컬럼 누락: {', '.join(sorted(missing))} "
+            "(헤더 첫 행에 'SKU', '품목명' 필요)",
+        )
+
+    # ── upsert ───────────────────────────────────────────────────
+    created = updated = skipped = 0
+    errors: list[dict] = []
+
+    for idx, r in enumerate(rows, start=2):  # 헤더 = 1행, 데이터는 2행부터
+        sku = str(r.get("sku") or "").strip()
+        name = str(r.get("name") or "").strip()
+        if not sku or not name:
+            errors.append({"row": idx, "reason": "SKU 또는 품목명 비어있음"})
+            continue
+
+        try:
+            unit_price = (
+                _D(str(r["unit_price"])) if r.get("unit_price") not in (None, "") else _D("0")
+            )
+            stock_qty = (
+                _D(str(r["stock_qty"])) if r.get("stock_qty") not in (None, "") else None
+            )
+        except (InvalidOperation, ValueError) as exc:
+            errors.append({"row": idx, "reason": f"숫자 파싱 실패: {exc}"})
+            continue
+
+        unit = str(r.get("unit") or "EA").strip() or "EA"
+        barcode = str(r.get("barcode") or "").strip() or None
+
+        existing = db.query(Item).filter(Item.sku == sku).first()
+        if existing:
+            if not upsert:
+                skipped += 1
+                continue
+            existing.name = name
+            existing.unit = unit
+            existing.unit_price = unit_price
+            if stock_qty is not None:
+                existing.stock_qty = stock_qty
+            if barcode is not None:
+                existing.barcode = barcode
+            updated += 1
+        else:
+            item = Item(
+                sku=sku,
+                name=name,
+                unit=unit,
+                unit_price=unit_price,
+                stock_qty=stock_qty if stock_qty is not None else _D("0"),
+                barcode=barcode,
+            )
+            db.add(item)
+            created += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=400, detail=f"저장 실패 (롤백됨): {exc}"
+        )
+
+    return {
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+        "total_rows": len(rows),
+    }
+
+
+@router.get("/movements/export")
+def export_movements(
+    format: str = Query("csv"),
+    inline: bool = Query(False),
+    item_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """재고 이동 내역 다운로드 — format=csv|xlsx|pdf."""
+    q = db.query(StockMovement).order_by(StockMovement.moved_at.desc())
+    if item_id is not None:
+        q = q.filter(StockMovement.item_id == item_id)
+    movements = q.all()
+
+    # 품목명도 같이 표기
+    item_ids = {m.item_id for m in movements}
+    items_by_id = {
+        i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()
+    }
+
+    headers = ["일시", "구분", "SKU", "품목명", "수량", "비고"]
+    rows = []
+    for m in movements:
+        prod = items_by_id.get(m.item_id)
+        rows.append(
+            [
+                m.moved_at.isoformat() if m.moved_at else "",
+                m.type.value if hasattr(m.type, "value") else str(m.type),
+                prod.sku if prod else "",
+                prod.name if prod else "",
+                float(m.quantity),
+                m.note or "",
+            ]
+        )
+    return export_table(rows, headers, "stock_movements", format, inline=inline)
 
 
 @router.post(
