@@ -23,11 +23,16 @@ def run() -> None:
     try:
         # Users -----------------------------------------------------------------
         if not settings.seed_demo_users:
-            print("seed_demo_users=false; skipping demo accounts.")
+            print(
+                "seed_demo_users=false; skipping demo accounts.\n"
+                "→ 운영 admin은 'python -m scripts.create_admin --email <ID> --name <이름>' 로 생성하세요."
+            )
         else:
             if settings.is_production:
                 raise RuntimeError(
-                    "Refusing to seed demo users in production. Set SEED_DEMO_USERS=false."
+                    "운영 환경에서 데모 계정 시드를 거부합니다.\n"
+                    "SEED_DEMO_USERS=false 설정 후, 운영 admin은\n"
+                    "'python -m scripts.create_admin' 으로 생성하세요."
                 )
             default_users = [
                 ("admin@wellgreen.com", "관리자", Role.admin, "admin1234"),
