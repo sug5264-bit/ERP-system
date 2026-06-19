@@ -46,15 +46,19 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-erp}
       PGHOST: db
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_REMOTE_TARGET: ${BACKUP_REMOTE_TARGET:-}  # e.g. myremote:erp-backups
     volumes:
       - ./deploy/backup.sh:/usr/local/bin/backup.sh:ro
+      - ./deploy/rclone.conf:/config/rclone/rclone.conf:ro
       - backup_data:/backups
     depends_on:
       db:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-c"]
+    # rclone is added on first start so the base image stays tiny.
     command: >
-      "while true; do
+      "apk add --no-cache rclone tzdata >/dev/null 2>&1;
+       while true; do
          /usr/local/bin/backup.sh || true;
          sleep 86400;
        done"

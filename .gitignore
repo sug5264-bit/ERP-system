@@ -10,6 +10,8 @@ venv/
 .env.*.local
 !.env.example
 deploy/backups/
+deploy/rclone.conf
+!deploy/rclone.conf.example
 
 # DB
 *.db
