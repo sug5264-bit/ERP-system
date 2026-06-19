@@ -96,6 +96,56 @@ def test_render_transaction_statement_returns_valid_pdf():
     assert b"HYSMyeongJo-Medium" in pdf or b"CIDFont" in pdf, "CID 한국어 폰트 미등록"
 
 
+def test_render_transaction_statement_v2_two_copies():
+    """v2 양식 — A4 1장 2부, 바코드/적요, 전잔/후잔 표기."""
+    from app.core.docs_pdf import (
+        LineItem,
+        PartyInfo,
+        render_transaction_statement_v2,
+    )
+
+    company = PartyInfo(
+        business_no="206-87-06151",
+        company_name="웰그린 라들러",
+        representative="이승주",
+        address="서울특별시 영등포구 선유로3길 10, 506호",
+        phone="031-797-8550",
+    )
+    customer = PartyInfo(
+        business_no=None,
+        company_name="GS앱발주",
+        representative=None,
+        address=None,
+        phone=None,
+    )
+    items = [
+        LineItem(
+            no=1,
+            name="에스터하지, 클림트 레드 2020",
+            spec="750ml",
+            qty=Decimal("2"),
+            unit="BTL",
+            unit_price=Decimal("12000"),
+            supply_amount=Decimal("24000"),
+            tax_amount=Decimal("2400"),
+            barcode="9003634113963",
+        ),
+    ]
+    pdf = render_transaction_statement_v2(
+        company,
+        customer,
+        items,
+        serial_no="2026/06/19 -1",
+        doc_date=date(2026, 6, 19),
+        bank_info="우리은행 1005-402-804956 (주)웰그린라들러",
+        opening_balance=Decimal("100000"),
+        closing_balance=Decimal("126400"),
+        copies=2,
+    )
+    assert pdf.startswith(b"%PDF-")
+    assert len(pdf) > 4000
+
+
 def test_render_acceptance_receipt():
     from app.core.docs_pdf import (
         LineItem,

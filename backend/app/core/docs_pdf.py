@@ -33,6 +33,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.platypus import (
+    Flowable,
     KeepTogether,
     Paragraph,
     SimpleDocTemplate,
@@ -77,6 +78,8 @@ class LineItem:
     unit_price: Decimal  # 공급단가
     supply_amount: Decimal  # 공급가액 = qty * unit_price (부가세 별도)
     tax_amount: Decimal  # 부가세 (10% 기본, 면세는 0)
+    barcode: str | None = None  # 바코드 (선택)
+    remark: str | None = None  # 적요 (선택)
 
 
 # ──── 유틸 ───────────────────────────────────────────────────────────
@@ -453,7 +456,10 @@ def render_transaction_statement(
     bank_info: str | None = None,
     remarks: str | None = None,
 ) -> bytes:
-    """거래명세표 PDF."""
+    """거래명세표 — 구(舊) 양식 (국세청 세금계산서 스타일).
+
+    하위 호환 유지를 위해 남겨두며, 신규 호출은 v2(실무 표준)를 사용.
+    """
     supply = sum((Decimal(i.supply_amount) for i in items), Decimal(0))
     tax = sum((Decimal(i.tax_amount) for i in items), Decimal(0))
 
@@ -473,6 +479,388 @@ def render_transaction_statement(
     story.append(Spacer(1, 6 * mm))
     story.append(_signature_block())
     return _build(story)
+
+
+# ────────────────────────────────────────────────────────────────────
+# v2: 실무 표준 거래명세서 — A4 1장 2부 (보관용 / 인수용)
+# ────────────────────────────────────────────────────────────────────
+
+# 한 행 최소 보장 (빈 행을 미리 그려 손글씨/추가 가능)
+_TXN_MIN_ROWS = 7
+
+
+class _DashedLine(Flowable):
+    """A4 너비를 가로지르는 점선 — 보관용/인수용 절취선."""
+
+    def __init__(self, width: float = 180 * mm, dash: tuple = (3, 2)):
+        super().__init__()
+        self.width = width
+        self.dash = dash
+        self.height = 4 * mm
+
+    def draw(self):
+        self.canv.saveState()
+        self.canv.setDash(self.dash[0], self.dash[1])
+        self.canv.setLineWidth(0.5)
+        self.canv.line(0, self.height / 2, self.width, self.height / 2)
+        # "절취선 ✂" 표시
+        self.canv.restoreState()
+
+
+def _txn_header_block(
+    company: PartyInfo,
+    customer: PartyInfo,
+    *,
+    title: str,
+    serial_no: str,
+) -> Table:
+    """상단 헤더 — 좌측 제목/거래처, 우측 공급자정보 2단."""
+
+    # 우측 공급자 박스 (2열 × 4행)
+    sup_inner = Table(
+        [
+            [
+                _para("일련번호", size=8, align="CENTER", bold=True),
+                _para(serial_no, size=9),
+                _para("TEL", size=8, align="CENTER", bold=True),
+                _para(company.phone or "-", size=9),
+            ],
+            [
+                _para("사업자등록번호", size=8, align="CENTER", bold=True),
+                _para(company.business_no or "-", size=9),
+                _para("성명", size=8, align="CENTER", bold=True),
+                _para(company.representative or "-", size=9),
+            ],
+            [
+                _para("상호", size=8, align="CENTER", bold=True),
+                _para(company.company_name, size=9),
+                "",
+                "",
+            ],
+            [
+                _para("주소", size=8, align="CENTER", bold=True),
+                _para(company.address or "-", size=8),
+                "",
+                "",
+            ],
+        ],
+        colWidths=[20 * mm, 38 * mm, 12 * mm, 32 * mm],
+    )
+    sup_inner.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), _FONT),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f1f5f9")),
+                ("BACKGROUND", (2, 0), (2, 1), colors.HexColor("#f1f5f9")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("SPAN", (1, 2), (3, 2)),  # 상호 가로 병합
+                ("SPAN", (1, 3), (3, 3)),  # 주소 가로 병합
+            ]
+        )
+    )
+
+    # 우측 셀 = "공급자" 세로 글자 + sup_inner
+    right_block = Table(
+        [[_para("공\n급\n자", size=10, align="CENTER", bold=True), sup_inner]],
+        colWidths=[7 * mm, 102 * mm],
+    )
+    right_block.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), _FONT),
+                ("GRID", (0, 0), (0, 0), 0.5, colors.black),
+                ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#e0f2e0")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (1, 0), (1, 0), 0),
+                ("RIGHTPADDING", (1, 0), (1, 0), 0),
+                ("TOPPADDING", (1, 0), (1, 0), 0),
+                ("BOTTOMPADDING", (1, 0), (1, 0), 0),
+            ]
+        )
+    )
+
+    # 좌측: 제목 + "거래처명 貴中" 박스 + ☎
+    left_title = Paragraph(
+        f'<font size="20"><b>{title}</b></font>',
+        ParagraphStyle("t", fontName=_FONT, alignment=1, leading=24),
+    )
+    cust_box = Table(
+        [
+            [_para(f"{customer.company_name}  貴 中", size=11, align="CENTER", bold=True)],
+            [_para(f"☎ {customer.phone or '-'}", size=9, align="CENTER")],
+        ],
+        colWidths=[71 * mm],
+        rowHeights=[10 * mm, 8 * mm],
+    )
+    cust_box.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), _FONT),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+    )
+    left_block = Table(
+        [[left_title], [cust_box]],
+        colWidths=[71 * mm],
+        rowHeights=[16 * mm, 18 * mm],
+    )
+    left_block.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ]
+        )
+    )
+
+    outer = Table(
+        [[left_block, right_block]],
+        colWidths=[71 * mm, 109 * mm],
+    )
+    outer.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]
+        )
+    )
+    return outer
+
+
+def _txn_amount_strip(total_with_tax: Decimal) -> Table:
+    """'금 액 : XX원 정             (₩XXX)' 가로 띠."""
+    rows = [
+        [
+            _para("금  액 :", size=11, align="LEFT", bold=True),
+            _para(f"{_korean_amount(int(total_with_tax))}원 정", size=11),
+            _para(f"(₩{_fmt_money(total_with_tax)})", size=11, align="RIGHT", bold=True),
+        ]
+    ]
+    t = Table(rows, colWidths=[20 * mm, 110 * mm, 50 * mm], rowHeights=[8 * mm])
+    t.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), _FONT),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+                ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#f1f5f9")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (0, 0), 4),
+                ("RIGHTPADDING", (2, 0), (2, 0), 4),
+            ]
+        )
+    )
+    return t
+
+
+def _txn_lines_table(items: Sequence[LineItem], *, min_rows: int = _TXN_MIN_ROWS) -> Table:
+    """품목 테이블 — 빈 행 보강(min_rows)."""
+    headers = ["바코드", "품목명", "규격", "단위", "수량", "단가", "공급가액", "부가세", "적요"]
+    col_widths = [
+        26 * mm,
+        44 * mm,
+        16 * mm,
+        12 * mm,
+        14 * mm,
+        20 * mm,
+        20 * mm,
+        16 * mm,
+        12 * mm,
+    ]
+    data = [[_para(h, size=8, align="CENTER", bold=True) for h in headers]]
+    for it in items:
+        data.append(
+            [
+                _para(it.barcode or "", size=8, align="CENTER"),
+                _para(it.name, size=9),
+                _para(it.spec or "", size=8, align="CENTER"),
+                _para(it.unit, size=8, align="CENTER"),
+                _para(_fmt_money(it.qty), size=9, align="RIGHT"),
+                _para(_fmt_money(it.unit_price) if it.unit_price else "", size=9, align="RIGHT"),
+                _para(_fmt_money(it.supply_amount) if it.supply_amount else "", size=9, align="RIGHT"),
+                _para(_fmt_money(it.tax_amount) if it.tax_amount else "", size=9, align="RIGHT"),
+                _para(it.remark or "", size=8, align="CENTER"),
+            ]
+        )
+    # 빈 행 채우기 (손글씨 영역)
+    while len(data) - 1 < min_rows:
+        data.append(["", "", "", "", "", "", "", "", ""])
+
+    t = Table(data, colWidths=col_widths, rowHeights=[7 * mm] + [6.5 * mm] * (len(data) - 1))
+    t.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), _FONT),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.black),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TEXTCOLOR", (1, 1), (1, -1), colors.HexColor("#065f46")),  # 품목명 녹색
+                ("TEXTCOLOR", (2, 1), (2, -1), colors.HexColor("#065f46")),  # 규격 녹색
+            ]
+        )
+    )
+    return t
+
+
+def _txn_totals_strip(
+    total_qty: Decimal, supply: Decimal, tax: Decimal
+) -> Table:
+    """합계 띠 — 수량 / 공급가액 / VAT / 합계 / 인수 (인)."""
+    rows = [
+        [
+            _para("수량", size=9, bold=True, align="CENTER"),
+            _para(_fmt_money(total_qty), size=10, align="RIGHT"),
+            _para("공급가액", size=9, bold=True, align="CENTER"),
+            _para(_fmt_money(supply), size=10, align="RIGHT"),
+            _para("VAT", size=9, bold=True, align="CENTER"),
+            _para(_fmt_money(tax), size=10, align="RIGHT"),
+            _para("합계", size=9, bold=True, align="CENTER"),
+            _para(_fmt_money(supply + tax), size=10, align="RIGHT"),
+            _para("인수", size=9, bold=True, align="CENTER"),
+            _para("                인", size=9, align="RIGHT"),
+        ]
+    ]
+    t = Table(
+        rows,
+        colWidths=[
+            12 * mm, 14 * mm,
+            16 * mm, 22 * mm,
+            10 * mm, 18 * mm,
+            12 * mm, 22 * mm,
+            12 * mm, 42 * mm,
+        ],
+        rowHeights=[8 * mm],
+    )
+    t.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), _FONT),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+                ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#f1f5f9")),
+                ("BACKGROUND", (2, 0), (2, 0), colors.HexColor("#f1f5f9")),
+                ("BACKGROUND", (4, 0), (4, 0), colors.HexColor("#f1f5f9")),
+                ("BACKGROUND", (6, 0), (6, 0), colors.HexColor("#f1f5f9")),
+                ("BACKGROUND", (8, 0), (8, 0), colors.HexColor("#fff7ed")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+    )
+    return t
+
+
+def _txn_footer(
+    bank_info: str | None,
+    opening_balance: Decimal | None,
+    closing_balance: Decimal | None,
+) -> list:
+    """하단 — 입금계좌 + 전잔/후잔."""
+    out: list = []
+    if bank_info:
+        out.append(_para(bank_info, size=9))
+    prev = "" if opening_balance is None else _fmt_money(opening_balance)
+    nxt = "" if closing_balance is None else _fmt_money(closing_balance)
+    out.append(_para(f"전잔 : {prev}    /    후잔 : {nxt}", size=9))
+    return out
+
+
+def _txn_one_copy(
+    company: PartyInfo,
+    customer: PartyInfo,
+    items: Sequence[LineItem],
+    *,
+    title: str,
+    serial_no: str,
+    bank_info: str | None,
+    opening_balance: Decimal | None,
+    closing_balance: Decimal | None,
+) -> list:
+    """거래명세서 1부 (보관용 또는 인수용) 구성 요소를 반환."""
+    total_qty = sum((Decimal(i.qty) for i in items), Decimal(0))
+    supply = sum((Decimal(i.supply_amount) for i in items), Decimal(0))
+    tax = sum((Decimal(i.tax_amount) for i in items), Decimal(0))
+    total = supply + tax
+
+    out: list = []
+    out.append(_txn_header_block(company, customer, title=title, serial_no=serial_no))
+    out.append(Spacer(1, 1 * mm))
+    out.append(_txn_amount_strip(total))
+    out.append(Spacer(1, 1 * mm))
+    out.append(_txn_lines_table(items))
+    out.append(Spacer(1, 1 * mm))
+    out.append(_txn_totals_strip(total_qty, supply, tax))
+    out.append(Spacer(1, 1 * mm))
+    out += _txn_footer(bank_info, opening_balance, closing_balance)
+    return out
+
+
+def render_transaction_statement_v2(
+    company: PartyInfo,
+    customer: PartyInfo,
+    items: Sequence[LineItem],
+    *,
+    serial_no: str,
+    doc_date: date,  # noqa: ARG001  # serial_no에 이미 일자 포함
+    bank_info: str | None = None,
+    opening_balance: Decimal | None = None,
+    closing_balance: Decimal | None = None,
+    copies: int = 2,
+    title: str = "거래명세서",
+) -> bytes:
+    """실무 표준 거래명세서 (A4 1장 N부, 절취선 분리).
+
+    - copies=2: 상단 보관용 + 하단 인수용 (default)
+    - 전잔/후잔: 외상매출금 잔액 (None이면 빈칸)
+    - bank_info: 1줄 문자열 ("우리은행 1005-... (주)웰그린")
+    """
+    story: list = []
+    for i in range(copies):
+        story += _txn_one_copy(
+            company,
+            customer,
+            items,
+            title=title,
+            serial_no=serial_no,
+            bank_info=bank_info,
+            opening_balance=opening_balance,
+            closing_balance=closing_balance,
+        )
+        if i < copies - 1:
+            story.append(Spacer(1, 4 * mm))
+            story.append(_DashedLine())
+            story.append(Spacer(1, 4 * mm))
+    return _build(story)
+
+
+def render_acceptance_receipt_v2(
+    company: PartyInfo,
+    customer: PartyInfo,
+    items: Sequence[LineItem],
+    *,
+    serial_no: str,
+    doc_date: date,
+    bank_info: str | None = None,
+    opening_balance: Decimal | None = None,
+    closing_balance: Decimal | None = None,
+) -> bytes:
+    """인수증 — 거래명세서와 동일 레이아웃, 제목만 변경, 1부."""
+    return render_transaction_statement_v2(
+        company,
+        customer,
+        items,
+        serial_no=serial_no,
+        doc_date=doc_date,
+        bank_info=bank_info,
+        opening_balance=opening_balance,
+        closing_balance=closing_balance,
+        copies=1,
+        title="인  수  증",
+    )
 
 
 def render_acceptance_receipt(

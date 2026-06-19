@@ -1,6 +1,6 @@
 """WMS endpoints: generate pick list from sales order → pick → pack into
 shipment → ship → deliver."""
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -335,11 +335,14 @@ def _shipment_to_line_items(
 ):
     """Pick list 라인 → docs_pdf LineItem 변환.
 
-    수량은 picked_qty 우선, 0이면 requested_qty.
-    부가세는 라인별 10% (면세품은 호출자가 vat_rate=0으로 호출).
+    - 단가는 SalesOrderItem.unit_price 우선 (실제 판매가), 없으면 Item.unit_price
+    - 수량은 picked_qty 우선, 0이면 requested_qty
+    - 바코드는 Item.barcode (양식에 표기)
+    - 부가세는 라인별 10% (면세품은 호출자가 vat_rate=0으로 호출)
     """
     from app.core.docs_pdf import LineItem
     from app.modules.inventory.models import Item
+    from app.modules.sales.models import SalesOrderItem
 
     pl = (
         db.query(PickList)
@@ -353,13 +356,24 @@ def _shipment_to_line_items(
     items_by_id = {
         i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()
     }
+    # 실제 판매가는 SO 라인에 있음
+    so_lines = (
+        db.query(SalesOrderItem)
+        .filter(SalesOrderItem.order_id == shipment.sales_order_id)
+        .all()
+    )
+    so_price_by_item: dict[int, Decimal] = {}
+    for sol in so_lines:
+        # 동일 item이 여러 라인이면 첫 라인 단가 사용
+        so_price_by_item.setdefault(sol.item_id, Decimal(sol.unit_price))
+
     lines: list[LineItem] = []
     for idx, li in enumerate(pl.items, start=1):
         qty = Decimal(li.picked_qty) if Decimal(li.picked_qty) > 0 else Decimal(li.requested_qty)
         prod = items_by_id.get(li.item_id)
         if not prod:
             continue
-        unit_price = Decimal(prod.unit_price or 0)
+        unit_price = so_price_by_item.get(li.item_id, Decimal(prod.unit_price or 0))
         supply = (qty * unit_price).quantize(Decimal("1"))
         tax = (supply * vat_rate).quantize(Decimal("1"))
         lines.append(
@@ -372,9 +386,46 @@ def _shipment_to_line_items(
                 unit_price=unit_price,
                 supply_amount=supply,
                 tax_amount=tax,
+                barcode=prod.barcode or "",
+                remark=None,
             )
         )
     return lines
+
+
+def _customer_balances(
+    db: Session, customer_id: int, as_of: date
+) -> tuple[Decimal, Decimal, Decimal]:
+    """거래처 외상매출금 잔액 계산.
+
+    Returns:
+        (전잔, 이번건 금액분, 후잔)  — 이번건은 호출자가 채움.
+    여기서는 전잔(as_of 이전까지의 미수금) 반환만 담당.
+    """
+    from app.modules.billing.models import Invoice, InvoiceStatus, Payment
+
+    inv_total = (
+        db.query(Invoice)
+        .filter(
+            Invoice.customer_id == customer_id,
+            Invoice.issued_date < as_of,
+            Invoice.status != InvoiceStatus.cancelled,
+        )
+        .all()
+    )
+    debit = sum((Decimal(i.total) for i in inv_total), Decimal(0))
+    pay_total = (
+        db.query(Payment)
+        .join(Invoice, Invoice.id == Payment.invoice_id)
+        .filter(
+            Invoice.customer_id == customer_id,
+            Payment.paid_at < as_of,
+        )
+        .all()
+    )
+    credit = sum((Decimal(p.amount) for p in pay_total), Decimal(0))
+    opening = debit - credit
+    return opening, Decimal(0), opening  # closing은 호출자가 +이번건으로 계산
 
 
 def _resolve_company_and_customer(db: Session, shipment: Shipment):
@@ -437,31 +488,48 @@ def _pdf_response(pdf_bytes: bytes, filename: str):
     )
 
 
+def _txn_bank_info_line(cp) -> str | None:
+    if not (cp.bank_name and cp.bank_account):
+        return None
+    holder = f" ({cp.bank_holder})" if cp.bank_holder else ""
+    return f"{cp.bank_name} {cp.bank_account}{holder}"
+
+
+def _serial_for(shipment: Shipment, doc_date: date) -> str:
+    """일련번호 = 'YYYY/MM/DD -ID'  (사용자 양식과 동일)."""
+    return f"{doc_date.strftime('%Y/%m/%d')} -{shipment.id}"
+
+
 @router.get("/shipments/{ship_id}/transaction-statement.pdf")
 def shipment_transaction_statement_pdf(
     ship_id: int, db: Session = Depends(get_db)
 ):
-    """거래명세표 PDF — 출고건 기준."""
-    from app.core.docs_pdf import render_transaction_statement
+    """거래명세표 PDF — 실무 표준 양식 (A4 1장 보관용+인수용 2부)."""
+    from app.core.docs_pdf import render_transaction_statement_v2
 
     s = db.query(Shipment).filter(Shipment.id == ship_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Shipment not found")
     company, customer, cp = _resolve_company_and_customer(db, s)
     lines = _shipment_to_line_items(db, s)
-    bank_info = None
-    if cp.bank_name and cp.bank_account:
-        bank_info = f"{cp.bank_name} {cp.bank_account}" + (
-            f" (예금주: {cp.bank_holder})" if cp.bank_holder else ""
-        )
-    pdf = render_transaction_statement(
+
+    doc_date = (s.shipped_at or s.packed_at or datetime.utcnow()).date()
+    opening, _, _ = _customer_balances(
+        db, _customer_id_of(db, s), doc_date
+    )
+    this_total = sum((Decimal(l.supply_amount) + Decimal(l.tax_amount) for l in lines), Decimal(0))
+    closing = opening + this_total
+
+    pdf = render_transaction_statement_v2(
         company,
         customer,
         lines,
-        doc_no=s.shipment_no,
-        doc_date=(s.shipped_at or s.packed_at or datetime.utcnow()).date(),
-        bank_info=bank_info,
-        remarks=s.notes,
+        serial_no=_serial_for(s, doc_date),
+        doc_date=doc_date,
+        bank_info=_txn_bank_info_line(cp),
+        opening_balance=opening,
+        closing_balance=closing,
+        copies=2,
     )
     return _pdf_response(pdf, f"거래명세표_{s.shipment_no}.pdf")
 
@@ -470,23 +538,35 @@ def shipment_transaction_statement_pdf(
 def shipment_acceptance_receipt_pdf(
     ship_id: int, db: Session = Depends(get_db)
 ):
-    """인수증 PDF — 출고건 기준."""
-    from app.core.docs_pdf import render_acceptance_receipt
+    """인수증 PDF — 거래명세서와 동일 레이아웃, 제목만 '인수증', 1부."""
+    from app.core.docs_pdf import render_acceptance_receipt_v2
 
     s = db.query(Shipment).filter(Shipment.id == ship_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Shipment not found")
-    company, customer, _ = _resolve_company_and_customer(db, s)
+    company, customer, cp = _resolve_company_and_customer(db, s)
     lines = _shipment_to_line_items(db, s)
-    pdf = render_acceptance_receipt(
+
+    doc_date = (s.delivered_at or s.shipped_at or s.packed_at or datetime.utcnow()).date()
+    opening, _, _ = _customer_balances(db, _customer_id_of(db, s), doc_date)
+    this_total = sum((Decimal(l.supply_amount) + Decimal(l.tax_amount) for l in lines), Decimal(0))
+
+    pdf = render_acceptance_receipt_v2(
         company,
         customer,
         lines,
-        doc_no=s.shipment_no,
-        doc_date=(s.delivered_at or s.shipped_at or s.packed_at or datetime.utcnow()).date(),
-        delivery_address=s.address_to,
+        serial_no=_serial_for(s, doc_date),
+        doc_date=doc_date,
+        bank_info=_txn_bank_info_line(cp),
+        opening_balance=opening,
+        closing_balance=opening + this_total,
     )
     return _pdf_response(pdf, f"인수증_{s.shipment_no}.pdf")
+
+
+def _customer_id_of(db: Session, shipment: Shipment) -> int:
+    so = db.query(SalesOrder).filter(SalesOrder.id == shipment.sales_order_id).first()
+    return so.customer_id if so else 0
 
 
 @router.post(
