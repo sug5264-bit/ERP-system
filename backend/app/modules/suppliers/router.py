@@ -7,7 +7,7 @@ can only see their own POs and acknowledge / ship them.
 from datetime import date
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.auth import (
@@ -1101,3 +1101,158 @@ def vendor_scorecard(
             "total_value": float(total_value),
         })
     return {"scorecard": out}
+
+
+# ---- Suppliers import / export ---------------------------------------------
+
+
+@router.get("/export", dependencies=[Depends(get_current_internal_user)])
+def export_suppliers(
+    format: str = Query("csv"),
+    inline: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """공급사 리스트 다운로드 — csv/xlsx/pdf."""
+    from app.core.exports import export_table
+
+    suppliers = db.query(Supplier).order_by(Supplier.code).all()
+    headers = [
+        "코드", "공급사명", "사업자번호", "대표자", "주소", "업태", "종목",
+        "전화", "팩스", "이메일", "담당자", "은행", "계좌", "활성",
+    ]
+    rows = [
+        [
+            s.code, s.name, s.business_no or "", s.representative or "",
+            s.address or "", s.business_type or "", s.business_item or "",
+            s.phone or "", s.fax or "", s.contact_email or "",
+            s.contact_person or "", s.bank_name or "", s.bank_account or "",
+            "Y" if s.is_active else "N",
+        ]
+        for s in suppliers
+    ]
+    return export_table(rows, headers, "suppliers", format, inline=inline)
+
+
+@router.get(
+    "/import-template", dependencies=[Depends(get_current_internal_user)]
+)
+def suppliers_import_template(format: str = Query("xlsx")):
+    """공급사 일괄등록 양식 다운로드."""
+    from app.core.exports import export_table
+
+    headers = [
+        "코드", "공급사명", "사업자번호", "대표자", "주소", "업태", "종목",
+        "전화", "팩스", "이메일", "담당자", "은행", "계좌",
+    ]
+    sample = [[
+        "SUP-001", "(주)예시공급사", "123-45-67890", "김공급",
+        "경기 성남시 분당구 예시로 1", "제조", "식품가공",
+        "031-1234-5678", "031-1234-5679", "supply@example.com", "박담당",
+        "신한은행", "100-200-300",
+    ]]
+    return export_table(sample, headers, "suppliers_import_template", format)
+
+
+@router.post(
+    "/import",
+    dependencies=[Depends(get_current_internal_user), Depends(require_role("admin"))],
+)
+async def import_suppliers(
+    file: UploadFile = File(...),
+    upsert: bool = Query(True),
+    db: Session = Depends(get_db),
+):
+    """공급사 일괄 등록/갱신.
+
+    필수: 코드 (또는 사업자번호 — 코드 자동생성)
+    매칭 우선순위: code > business_no
+    """
+    from app.core.business_no import format_business_no, is_valid_business_no
+    from app.core.imports import parse_upload
+
+    alias = {
+        "code": "code", "코드": "code", "공급사코드": "code",
+        "name": "name", "공급사명": "name", "이름": "name", "상호": "name",
+        "business_no": "business_no", "사업자번호": "business_no", "사업자등록번호": "business_no",
+        "representative": "representative", "대표자": "representative", "대표": "representative",
+        "address": "address", "주소": "address",
+        "business_type": "business_type", "업태": "business_type",
+        "business_item": "business_item", "종목": "business_item",
+        "phone": "phone", "전화": "phone", "tel": "phone",
+        "fax": "fax", "팩스": "fax",
+        "email": "contact_email", "이메일": "contact_email", "contact_email": "contact_email",
+        "contact_person": "contact_person", "담당자": "contact_person",
+        "bank_name": "bank_name", "은행": "bank_name",
+        "bank_account": "bank_account", "계좌": "bank_account",
+    }
+    rows = await parse_upload(file, alias)
+
+    created = updated = skipped = 0
+    errors: list[dict] = []
+
+    for idx, r in enumerate(rows, start=2):
+        code = str(r.get("code") or "").strip()
+        name = str(r.get("name") or "").strip()
+        biz_no = str(r.get("business_no") or "").strip() or None
+
+        if not code and not biz_no:
+            errors.append({"row": idx, "reason": "코드와 사업자번호 모두 없음"})
+            continue
+        if not name:
+            errors.append({"row": idx, "reason": "공급사명 비어있음"})
+            continue
+        if biz_no and not is_valid_business_no(biz_no):
+            errors.append({"row": idx, "reason": f"사업자번호 체크섬 오류: {biz_no}"})
+            continue
+        if biz_no:
+            biz_no = format_business_no(biz_no)
+        if not code:
+            # 코드 자동생성: SUP-<biz_no 숫자뒤6>
+            digits = "".join(c for c in biz_no if c.isdigit())
+            code = f"SUP-{digits[-6:]}" if digits else f"SUP-{idx}"
+
+        existing = db.query(Supplier).filter(Supplier.code == code).first()
+        if not existing and biz_no:
+            existing = db.query(Supplier).filter(Supplier.business_no == biz_no).first()
+
+        fields = {
+            "code": code,
+            "name": name,
+            "business_no": biz_no,
+            "representative": str(r.get("representative") or "").strip() or None,
+            "address": str(r.get("address") or "").strip() or None,
+            "business_type": str(r.get("business_type") or "").strip() or None,
+            "business_item": str(r.get("business_item") or "").strip() or None,
+            "phone": str(r.get("phone") or "").strip() or None,
+            "fax": str(r.get("fax") or "").strip() or None,
+            "contact_email": str(r.get("contact_email") or "").strip() or None,
+            "contact_person": str(r.get("contact_person") or "").strip() or None,
+            "bank_name": str(r.get("bank_name") or "").strip() or None,
+            "bank_account": str(r.get("bank_account") or "").strip() or None,
+        }
+
+        if existing:
+            if not upsert:
+                skipped += 1
+                continue
+            for k, v in fields.items():
+                if v is not None:
+                    setattr(existing, k, v)
+            updated += 1
+        else:
+            db.add(Supplier(**fields))
+            created += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"저장 실패: {exc}")
+
+    return {
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+        "total_rows": len(rows),
+    }

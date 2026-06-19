@@ -1,9 +1,19 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from app.core.business_no import format_business_no, is_valid_business_no
 from app.modules.sales.models import OrderStatus
+
+
+def _check_biz_no(v: str | None) -> str | None:
+    """선택 필드 — 빈 값은 통과, 입력했으면 체크섬 검증 + 정형화."""
+    if v is None or v.strip() == "":
+        return None
+    if not is_valid_business_no(v):
+        raise ValueError("유효한 사업자등록번호가 아닙니다 (체크섬 불일치)")
+    return format_business_no(v)
 
 
 class CustomerBase(BaseModel):
@@ -20,6 +30,11 @@ class CustomerBase(BaseModel):
     contact_person: str | None = None
     bank_name: str | None = None
     bank_account: str | None = None
+
+    @field_validator("business_no")
+    @classmethod
+    def _validate_business_no(cls, v: str | None) -> str | None:
+        return _check_biz_no(v)
 
 
 class CustomerCreate(CustomerBase):
@@ -40,6 +55,11 @@ class CustomerUpdate(BaseModel):
     contact_person: str | None = None
     bank_name: str | None = None
     bank_account: str | None = None
+
+    @field_validator("business_no")
+    @classmethod
+    def _validate_business_no(cls, v: str | None) -> str | None:
+        return _check_biz_no(v)
 
 
 class CustomerOut(CustomerBase):

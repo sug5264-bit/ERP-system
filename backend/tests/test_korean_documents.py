@@ -537,7 +537,8 @@ def test_company_profile_upsert_and_get(client, admin_auth):
     assert res.status_code == 404
 
     payload = {
-        "business_no": "123-45-67890",
+        # 실제 체크섬 통과하는 사업자번호 사용 (가짜 번호는 거부됨)
+        "business_no": "206-87-06151",
         "company_name": "(주)웰그린",
         "representative": "김대표",
         "address": "서울특별시 강남구 테헤란로 123",
@@ -574,7 +575,7 @@ def test_company_profile_requires_admin(client, staff_auth):
     res = client.put(
         "/api/company-profile",
         json={
-            "business_no": "111-11-11111",
+            "business_no": "206-87-06151",
             "company_name": "X",
             "representative": "Y",
             "address": "Z",
@@ -584,16 +585,35 @@ def test_company_profile_requires_admin(client, staff_auth):
     assert res.status_code == 403
 
 
+def test_company_profile_rejects_invalid_business_no(client, admin_auth):
+    """체크섬 무효 사업자번호는 422로 거부."""
+    res = client.put(
+        "/api/company-profile",
+        json={
+            "business_no": "123-45-67890",  # 체크섬 오류
+            "company_name": "X",
+            "representative": "Y",
+            "address": "Z",
+        },
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 422
+    body = res.json()
+    # envelope 또는 detail에 "사업자등록번호" 메시지 포함
+    txt = str(body)
+    assert "사업자등록번호" in txt or "business_no" in txt
+
+
 # ────── 3. 출고 → 거래명세표/인수증 통합 ────────────────────────
 
 
 def _setup_shipment(client, db_session, admin_headers):
     """회사정보+거래처+상품+주문+pick+ship까지 한 번에 만들기."""
-    # 회사정보
+    # 회사정보 (체크섬 검증 통과하는 사업자번호)
     client.put(
         "/api/company-profile",
         json={
-            "business_no": "123-45-67890",
+            "business_no": "206-87-06151",
             "company_name": "(주)웰그린",
             "representative": "김대표",
             "address": "서울 강남",
@@ -709,3 +729,195 @@ def test_shipment_pdf_blocked_without_company_profile(client, db_session, admin_
     body = res.json()
     msg = body.get("error", {}).get("message") or body.get("detail", "")
     assert "회사정보" in msg
+
+
+# ────── 5. 사업자번호 체크섬 검증 ────────────────────────────────
+
+
+def test_business_no_validation_unit():
+    """체크섬 알고리즘 단위 테스트."""
+    from app.core.business_no import (
+        format_business_no,
+        is_valid_business_no,
+        normalize_business_no,
+    )
+
+    # 유효
+    assert is_valid_business_no("206-87-06151") is True
+    assert is_valid_business_no("105-86-15670") is True
+    assert is_valid_business_no("2068706151") is True  # 하이픈 없이
+    assert is_valid_business_no("1234567891") is True  # 생성된 유효값
+
+    # 무효
+    assert is_valid_business_no("123-45-67890") is False  # 체크섬 오류
+    assert is_valid_business_no("000-00-00000") is False
+    assert is_valid_business_no("12345") is False  # 자리수 미달
+    assert is_valid_business_no("") is False
+    assert is_valid_business_no(None) is False
+    assert is_valid_business_no("abc-de-fghij") is False
+
+    # 정형화
+    assert format_business_no("2068706151") == "206-87-06151"
+    assert format_business_no("206-87-06151") == "206-87-06151"
+    assert normalize_business_no("206-87-06151") == "2068706151"
+
+
+# ────── 6. 거래처/공급사 import ──────────────────────────────────
+
+
+def test_customers_import_xlsx(client, db_session, admin_auth):
+    """거래처 일괄 등록 — 유효/무효 사업자번호 혼합."""
+    import io as _io
+    from openpyxl import Workbook
+    from app.modules.sales.models import Customer
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["이름", "상호", "사업자번호", "대표자", "주소", "업태"])
+    ws.append(["고객A", "(주)고객A상사", "206-87-06151", "김에이", "서울 강남", "도소매"])
+    ws.append(["고객B", "(주)고객B", "105-86-15670", "이비이", "서울 마포", "음식점"])
+    ws.append(["고객C-잘못된사업자번호", "C상사", "111-11-11111", "박씨", "주소", "기타"])
+    buf = _io.BytesIO()
+    wb.save(buf)
+
+    res = client.post(
+        "/api/sales/customers/import",
+        files={
+            "file": (
+                "customers.xlsx",
+                buf.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["created"] == 2  # 유효 2건
+    assert len(body["errors"]) == 1  # 체크섬 오류 1건
+    assert "사업자번호" in body["errors"][0]["reason"]
+
+    # DB 확인
+    db_session.expire_all()
+    assert db_session.query(Customer).filter(Customer.name == "고객A").first() is not None
+    assert (
+        db_session.query(Customer).filter(Customer.name == "고객C-잘못된사업자번호").first()
+        is None
+    )
+
+
+def test_suppliers_import_csv(client, db_session, admin_auth):
+    from app.modules.suppliers.models import Supplier
+
+    csv_text = (
+        "코드,공급사명,사업자번호,대표자,주소\n"
+        "SUP-A,(주)공급A,206-87-06151,김공급,서울\n"
+        ",(주)공급B,105-86-15670,이공급,경기\n"  # 코드 자동생성
+    )
+    res = client.post(
+        "/api/suppliers/import",
+        files={"file": ("s.csv", csv_text.encode("utf-8"), "text/csv")},
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["created"] == 2
+    db_session.expire_all()
+    assert db_session.query(Supplier).filter(Supplier.code == "SUP-A").first() is not None
+    # 코드 자동생성: SUP-<사업자번호 뒤6자리>
+    auto = db_session.query(Supplier).filter(Supplier.name == "(주)공급B").first()
+    assert auto is not None and auto.code.startswith("SUP-")
+
+
+# ────── 7. 출고 → 청구서 자동 draft ──────────────────────────────
+
+
+def test_generate_invoice_from_shipment(client, db_session, admin_auth):
+    """출고 1건 → Invoice draft 자동 생성, 멱등성 검증."""
+    from app.modules.billing.models import Invoice, InvoiceStatus
+
+    ship_id = _setup_shipment(client, db_session, admin_auth["headers"])
+
+    res = client.post(
+        f"/api/wms/shipments/{ship_id}/generate-invoice",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["already_exists"] is False
+    invoice_id = body["invoice_id"]
+
+    db_session.expire_all()
+    inv = db_session.query(Invoice).filter(Invoice.id == invoice_id).first()
+    assert inv is not None
+    assert inv.status == InvoiceStatus.draft
+    # 10 box × 15,000 = 150,000 + 10% VAT = 165,000
+    assert int(inv.subtotal) == 150000
+    assert int(inv.tax) == 15000
+    assert int(inv.total) == 165000
+
+    # 멱등성: 한 번 더 호출하면 같은 invoice 반환
+    res2 = client.post(
+        f"/api/wms/shipments/{ship_id}/generate-invoice",
+        headers=admin_auth["headers"],
+    )
+    assert res2.status_code == 200
+    assert res2.json()["already_exists"] is True
+    assert res2.json()["invoice_id"] == invoice_id
+
+
+# ────── 8. 로고/직인 업로드 ──────────────────────────────────────
+
+
+def _make_png_bytes() -> bytes:
+    """최소 PNG (1x1 투명) — 테스트 업로드용."""
+    return bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "00000010494441547801636001000000050001a2ed8b6a0000000049454e44ae426082"
+    )
+
+
+def test_company_logo_upload_and_get(client, admin_auth):
+    """로고 업로드 → GET으로 동일 바이트 반환."""
+    # 회사정보 먼저
+    client.put(
+        "/api/company-profile",
+        json={
+            "business_no": "206-87-06151",
+            "company_name": "(주)웰그린",
+            "representative": "김대표",
+            "address": "서울",
+        },
+        headers=admin_auth["headers"],
+    )
+    png = _make_png_bytes()
+    res = client.post(
+        "/api/company-profile/upload-logo",
+        files={"file": ("logo.png", png, "image/png")},
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["ok"] is True
+
+    res = client.get("/api/company-profile/logo", headers=admin_auth["headers"])
+    assert res.status_code == 200
+    assert res.content[:8] == b"\x89PNG\r\n\x1a\n"  # PNG 시그니처
+
+
+def test_company_stamp_upload_rejects_non_image(client, admin_auth):
+    client.put(
+        "/api/company-profile",
+        json={
+            "business_no": "206-87-06151",
+            "company_name": "(주)웰그린",
+            "representative": "김대표",
+            "address": "서울",
+        },
+        headers=admin_auth["headers"],
+    )
+    res = client.post(
+        "/api/company-profile/upload-stamp",
+        files={"file": ("bad.txt", b"not an image", "text/plain")},
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 400

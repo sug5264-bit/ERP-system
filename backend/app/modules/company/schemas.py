@@ -1,4 +1,6 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+from app.core.business_no import format_business_no, is_valid_business_no
 
 
 class CompanyProfileIn(BaseModel):
@@ -18,6 +20,15 @@ class CompanyProfileIn(BaseModel):
     bank_holder: str | None = None
     logo_path: str | None = None
     stamp_path: str | None = None
+
+    @field_validator("business_no")
+    @classmethod
+    def _validate_biz_no(cls, v: str) -> str:
+        if not is_valid_business_no(v):
+            raise ValueError(
+                "유효한 사업자등록번호가 아닙니다 (체크섬 불일치 또는 형식 오류)"
+            )
+        return format_business_no(v)
 
 
 class CompanyProfileOut(CompanyProfileIn):

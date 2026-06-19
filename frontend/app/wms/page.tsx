@@ -354,6 +354,26 @@ function ShipTab({
                 >
                   인수증
                 </button>
+                <button
+                  onClick={() =>
+                    api<{ invoice_no: string; already_exists: boolean }>(
+                      `/api/wms/shipments/${r.id}/generate-invoice`,
+                      { method: "POST" }
+                    )
+                      .then((d) =>
+                        alert(
+                          d.already_exists
+                            ? `이미 생성된 청구서: ${d.invoice_no}`
+                            : `청구서 draft 생성: ${d.invoice_no} (Billing 메뉴에서 발행)`
+                        )
+                      )
+                      .catch((e) => onError(String(e)))
+                  }
+                  className="text-blue-700 hover:underline"
+                  title="출고건으로 청구서 draft 자동 생성"
+                >
+                  → 청구서
+                </button>
               </div>
             ),
           },

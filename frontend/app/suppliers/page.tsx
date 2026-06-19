@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
 import EditDeleteActions from "@/components/EditDeleteActions";
+import ExportMenu from "@/components/ExportMenu";
+import ImportMenu from "@/components/ImportMenu";
 import Pager from "@/components/Pager";
 import { Page, api, downloadFile } from "@/lib/api";
 
@@ -52,6 +54,12 @@ export default function SuppliersPage() {
     representative: "",
     address: "",
     phone: "",
+    business_type: "",
+    business_item: "",
+    fax: "",
+    contact_person: "",
+    bank_name: "",
+    bank_account: "",
   });
   const [showSupExtra, setShowSupExtra] = useState(false);
   const [portalForm, setPortalForm] = useState({
@@ -107,6 +115,12 @@ export default function SuppliersPage() {
         representative: "",
         address: "",
         phone: "",
+        business_type: "",
+        business_item: "",
+        fax: "",
+        contact_person: "",
+        bank_name: "",
+        bank_account: "",
       });
       await load();
     } catch (e) {
@@ -219,6 +233,21 @@ export default function SuppliersPage() {
 
       {tab === "suppliers" && (
         <>
+          <div className="flex justify-between items-center mb-3">
+            <div className="text-sm text-slate-600">
+              일괄 등록은 Excel 양식 다운 → 채워서 업로드
+            </div>
+            <div className="flex gap-2">
+              <ImportMenu
+                importEndpoint="/api/suppliers/import"
+                templateEndpoint="/api/suppliers/import-template"
+                templateFilename="공급사_업로드양식.xlsx"
+                onComplete={() => load()}
+                onError={setError}
+              />
+              <ExportMenu endpoint="/api/suppliers/export" filename="suppliers" />
+            </div>
+          </div>
           <form
             onSubmit={addSupplier}
             className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 grid grid-cols-1 md:grid-cols-4 gap-3 mb-6"
@@ -287,6 +316,54 @@ export default function SuppliersPage() {
                     setSupForm({ ...supForm, address: e.target.value })
                   }
                   className="border rounded px-2 py-1 md:col-span-4"
+                />
+                <input
+                  placeholder="업태 (예: 제조)"
+                  value={supForm.business_type}
+                  onChange={(e) =>
+                    setSupForm({ ...supForm, business_type: e.target.value })
+                  }
+                  className="border rounded px-2 py-1"
+                />
+                <input
+                  placeholder="종목 (예: 식품가공)"
+                  value={supForm.business_item}
+                  onChange={(e) =>
+                    setSupForm({ ...supForm, business_item: e.target.value })
+                  }
+                  className="border rounded px-2 py-1"
+                />
+                <input
+                  placeholder="팩스"
+                  value={supForm.fax}
+                  onChange={(e) =>
+                    setSupForm({ ...supForm, fax: e.target.value })
+                  }
+                  className="border rounded px-2 py-1"
+                />
+                <input
+                  placeholder="담당자"
+                  value={supForm.contact_person}
+                  onChange={(e) =>
+                    setSupForm({ ...supForm, contact_person: e.target.value })
+                  }
+                  className="border rounded px-2 py-1"
+                />
+                <input
+                  placeholder="은행"
+                  value={supForm.bank_name}
+                  onChange={(e) =>
+                    setSupForm({ ...supForm, bank_name: e.target.value })
+                  }
+                  className="border rounded px-2 py-1"
+                />
+                <input
+                  placeholder="계좌번호"
+                  value={supForm.bank_account}
+                  onChange={(e) =>
+                    setSupForm({ ...supForm, bank_account: e.target.value })
+                  }
+                  className="border rounded px-2 py-1 md:col-span-3"
                 />
               </>
             )}

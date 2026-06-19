@@ -34,6 +34,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.platypus import (
     Flowable,
+    Image,
     KeepTogether,
     Paragraph,
     SimpleDocTemplate,
@@ -64,6 +65,8 @@ class PartyInfo:
     business_item: str | None = None
     phone: str | None = None
     fax: str | None = None
+    logo_path: str | None = None   # 자사 로고 (헤더 좌상단)
+    stamp_path: str | None = None  # 직인 (인수란 배경)
 
 
 @dataclass
@@ -560,11 +563,19 @@ def _txn_header_block(
         )
     )
 
-    # 우측 셀 = "공급자" 세로 글자 + sup_inner
-    right_block = Table(
-        [[_para("공\n급\n자", size=10, align="CENTER", bold=True), sup_inner]],
-        colWidths=[7 * mm, 102 * mm],
-    )
+    # 우측 셀 = "공급자" 세로 글자 + sup_inner (+ 직인 오버레이 옵션)
+    cols = [[_para("공\n급\n자", size=10, align="CENTER", bold=True), sup_inner]]
+    widths = [7 * mm, 102 * mm]
+    if company.stamp_path:
+        try:
+            import os
+            if os.path.exists(company.stamp_path):
+                stamp = Image(company.stamp_path, width=18 * mm, height=18 * mm, kind="proportional")
+                cols = [[_para("공\n급\n자", size=10, align="CENTER", bold=True), sup_inner, stamp]]
+                widths = [7 * mm, 84 * mm, 18 * mm]
+        except Exception:
+            pass
+    right_block = Table(cols, colWidths=widths)
     right_block.setStyle(
         TableStyle(
             [
@@ -572,6 +583,7 @@ def _txn_header_block(
                 ("GRID", (0, 0), (0, 0), 0.5, colors.black),
                 ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#e0f2e0")),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
                 ("LEFTPADDING", (1, 0), (1, 0), 0),
                 ("RIGHTPADDING", (1, 0), (1, 0), 0),
                 ("TOPPADDING", (1, 0), (1, 0), 0),
@@ -580,11 +592,32 @@ def _txn_header_block(
         )
     )
 
-    # 좌측: 제목 + "거래처명 貴中" 박스 + ☎
-    left_title = Paragraph(
+    # 좌측: 제목 + "거래처명 貴中" 박스 + ☎. 로고가 있으면 제목 옆에 표시.
+    title_para = Paragraph(
         f'<font size="20"><b>{title}</b></font>',
         ParagraphStyle("t", fontName=_FONT, alignment=1, leading=24),
     )
+    left_title = title_para
+    if company.logo_path:
+        try:
+            import os
+            if os.path.exists(company.logo_path):
+                logo = Image(company.logo_path, width=14 * mm, height=14 * mm, kind="proportional")
+                lt = Table([[logo, title_para]], colWidths=[16 * mm, 55 * mm])
+                lt.setStyle(
+                    TableStyle(
+                        [
+                            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                            ("ALIGN", (0, 0), (0, 0), "CENTER"),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 1),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 1),
+                        ]
+                    )
+                )
+                left_title = lt
+        except Exception:
+            # 손상된 이미지여도 빌드는 계속
+            pass
     cust_box = Table(
         [
             [_para(f"{customer.company_name}  貴 中", size=11, align="CENTER", bold=True)],

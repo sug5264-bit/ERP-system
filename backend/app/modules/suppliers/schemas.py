@@ -1,9 +1,18 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from app.core.business_no import format_business_no, is_valid_business_no
 from app.modules.suppliers.models import POStatus
+
+
+def _check_biz_no(v: str | None) -> str | None:
+    if v is None or v.strip() == "":
+        return None
+    if not is_valid_business_no(v):
+        raise ValueError("유효한 사업자등록번호가 아닙니다 (체크섬 불일치)")
+    return format_business_no(v)
 
 
 class SupplierIn(BaseModel):
@@ -22,6 +31,11 @@ class SupplierIn(BaseModel):
     bank_account: str | None = None
     portal_user_id: int | None = None
 
+    @field_validator("business_no")
+    @classmethod
+    def _validate_business_no(cls, v: str | None) -> str | None:
+        return _check_biz_no(v)
+
 
 class SupplierUpdate(BaseModel):
     name: str | None = None
@@ -37,6 +51,11 @@ class SupplierUpdate(BaseModel):
     bank_name: str | None = None
     bank_account: str | None = None
     is_active: bool | None = None
+
+    @field_validator("business_no")
+    @classmethod
+    def _validate_business_no(cls, v: str | None) -> str | None:
+        return _check_biz_no(v)
 
 
 class CreateSupplierWithPortalUser(BaseModel):

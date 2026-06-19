@@ -4,6 +4,7 @@ import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
 import EditDeleteActions from "@/components/EditDeleteActions";
 import ExportMenu from "@/components/ExportMenu";
+import ImportMenu from "@/components/ImportMenu";
 import Pager from "@/components/Pager";
 import { Page, api } from "@/lib/api";
 
@@ -36,6 +37,12 @@ export default function SalesPage() {
     representative: "",
     address: "",
     phone: "",
+    business_type: "",
+    business_item: "",
+    fax: "",
+    contact_person: "",
+    bank_name: "",
+    bank_account: "",
   });
   const [showCustExtra, setShowCustExtra] = useState(false);
 
@@ -79,6 +86,12 @@ export default function SalesPage() {
           representative: custForm.representative || null,
           address: custForm.address || null,
           phone: custForm.phone || null,
+          business_type: custForm.business_type || null,
+          business_item: custForm.business_item || null,
+          fax: custForm.fax || null,
+          contact_person: custForm.contact_person || null,
+          bank_name: custForm.bank_name || null,
+          bank_account: custForm.bank_account || null,
         }),
       });
       setCustForm({
@@ -89,6 +102,12 @@ export default function SalesPage() {
         representative: "",
         address: "",
         phone: "",
+        business_type: "",
+        business_item: "",
+        fax: "",
+        contact_person: "",
+        bank_name: "",
+        bank_account: "",
       });
       await load();
     } catch (e) {
@@ -159,7 +178,22 @@ export default function SalesPage() {
       </div>
       {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
 
-      <h2 className="text-lg font-medium mb-2">고객 추가</h2>
+      <div className="flex justify-between items-center mb-2">
+        <h2 className="text-lg font-medium">고객 추가</h2>
+        <div className="flex gap-2">
+          <ImportMenu
+            importEndpoint="/api/sales/customers/import"
+            templateEndpoint="/api/sales/customers/import-template"
+            templateFilename="거래처_업로드양식.xlsx"
+            onComplete={() => load().catch((e) => setError(String(e)))}
+            onError={setError}
+          />
+          <ExportMenu
+            endpoint="/api/sales/customers/export"
+            filename="customers"
+          />
+        </div>
+      </div>
       <form
         onSubmit={addCustomer}
         className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 grid grid-cols-1 md:grid-cols-4 gap-3 mb-6"
@@ -222,6 +256,52 @@ export default function SalesPage() {
               placeholder="전화"
               value={custForm.phone}
               onChange={(e) => setCustForm({ ...custForm, phone: e.target.value })}
+              className="border rounded px-2 py-1"
+            />
+            <input
+              placeholder="업태 (예: 도소매)"
+              value={custForm.business_type}
+              onChange={(e) =>
+                setCustForm({ ...custForm, business_type: e.target.value })
+              }
+              className="border rounded px-2 py-1"
+            />
+            <input
+              placeholder="종목 (예: 식품)"
+              value={custForm.business_item}
+              onChange={(e) =>
+                setCustForm({ ...custForm, business_item: e.target.value })
+              }
+              className="border rounded px-2 py-1"
+            />
+            <input
+              placeholder="팩스"
+              value={custForm.fax}
+              onChange={(e) => setCustForm({ ...custForm, fax: e.target.value })}
+              className="border rounded px-2 py-1"
+            />
+            <input
+              placeholder="담당자"
+              value={custForm.contact_person}
+              onChange={(e) =>
+                setCustForm({ ...custForm, contact_person: e.target.value })
+              }
+              className="border rounded px-2 py-1"
+            />
+            <input
+              placeholder="은행"
+              value={custForm.bank_name}
+              onChange={(e) =>
+                setCustForm({ ...custForm, bank_name: e.target.value })
+              }
+              className="border rounded px-2 py-1"
+            />
+            <input
+              placeholder="계좌번호"
+              value={custForm.bank_account}
+              onChange={(e) =>
+                setCustForm({ ...custForm, bank_account: e.target.value })
+              }
               className="border rounded px-2 py-1"
             />
           </>

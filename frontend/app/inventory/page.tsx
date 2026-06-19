@@ -4,6 +4,7 @@ import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
 import EditDeleteActions from "@/components/EditDeleteActions";
 import ExportMenu from "@/components/ExportMenu";
+import ImportMenu from "@/components/ImportMenu";
 import Pager from "@/components/Pager";
 import { Page, api, downloadFile, uploadFile } from "@/lib/api";
 import { useCurrency } from "@/lib/currency";
@@ -120,7 +121,13 @@ export default function InventoryPage() {
       <div className="flex justify-between items-center mb-4">
         <h1 className="text-2xl font-semibold">재고 / 물류</h1>
         <div className="flex gap-2 items-center">
-          <ImportMenu onComplete={load} onError={setError} />
+          <ImportMenu
+            importEndpoint="/api/inventory/items/import"
+            templateEndpoint="/api/inventory/items/import-template"
+            templateFilename="품목_업로드양식.xlsx"
+            onComplete={load}
+            onError={setError}
+          />
           <ExportMenu endpoint="/api/inventory/items/export" filename="items" />
         </div>
       </div>
@@ -310,76 +317,4 @@ export default function InventoryPage() {
   );
 }
 
-function ImportMenu({
-  onComplete,
-  onError,
-}: {
-  onComplete: () => void;
-  onError: (s: string) => void;
-}) {
-  const [busy, setBusy] = useState(false);
-
-  const pick = () => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".xlsx,.csv,.xls";
-    input.onchange = async () => {
-      const f = input.files?.[0];
-      if (!f) return;
-      setBusy(true);
-      try {
-        const res = await uploadFile<{
-          created: number;
-          updated: number;
-          skipped: number;
-          errors: { row: number; reason: string }[];
-          total_rows: number;
-        }>("/api/inventory/items/import?upsert=true", f);
-        const errMsg =
-          res.errors.length > 0
-            ? `\n실패 ${res.errors.length}건:\n` +
-              res.errors
-                .slice(0, 10)
-                .map((e) => `  ${e.row}행: ${e.reason}`)
-                .join("\n")
-            : "";
-        alert(
-          `완료\n신규 ${res.created} · 갱신 ${res.updated} · 건너뜀 ${res.skipped} (총 ${res.total_rows}행)${errMsg}`
-        );
-        onComplete();
-      } catch (e) {
-        onError(String(e));
-      } finally {
-        setBusy(false);
-      }
-    };
-    input.click();
-  };
-
-  const downloadTemplate = () => {
-    downloadFile(
-      "/api/inventory/items/import-template?format=xlsx",
-      "품목_업로드양식.xlsx"
-    ).catch((e) => onError(String(e)));
-  };
-
-  return (
-    <div className="inline-flex rounded border border-emerald-300 overflow-hidden text-sm bg-emerald-50">
-      <button
-        onClick={pick}
-        disabled={busy}
-        className="px-3 py-1 hover:bg-emerald-100 disabled:opacity-50"
-        title="Excel(.xlsx) 또는 CSV 업로드"
-      >
-        {busy ? "업로드 중..." : "↑ 업로드"}
-      </button>
-      <button
-        onClick={downloadTemplate}
-        className="px-3 py-1 hover:bg-emerald-100 border-l border-emerald-300"
-        title="업로드 양식 다운로드"
-      >
-        양식
-      </button>
-    </div>
-  );
-}
+// Note: ImportMenu 공용 컴포넌트는 components/ImportMenu.tsx 에 있음.

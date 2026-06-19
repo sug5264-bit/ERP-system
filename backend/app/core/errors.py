@@ -64,16 +64,33 @@ def install_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(request: Request, exc: RequestValidationError):
-        msg = "Request validation failed"
         rid = getattr(request.state, "request_id", None)
+        # Pydantic v2 errors()는 ctx에 raw exception 객체를 넣어두는데
+        # 그대로면 JSON 직렬화 실패. str()로 평면화.
+        safe_fields = []
+        first_msg = "Request validation failed"
+        for e in exc.errors():
+            ctx = e.get("ctx") or {}
+            safe_ctx = {k: str(v) for k, v in ctx.items()}
+            safe_fields.append(
+                {
+                    "loc": list(e.get("loc", [])),
+                    "msg": e.get("msg"),
+                    "type": e.get("type"),
+                    "ctx": safe_ctx,
+                }
+            )
+            # 첫 에러 메시지를 envelope.message로 노출 (한글 검증 메시지 살리기)
+            if first_msg == "Request validation failed" and e.get("msg"):
+                first_msg = str(e["msg"])
         return JSONResponse(
             status_code=422,
             content={
                 "error": {
                     "code": "VALIDATION_ERROR",
-                    "message": msg,
+                    "message": first_msg,
                     "request_id": rid,
-                    "fields": exc.errors(),
+                    "fields": safe_fields,
                 }
             },
         )

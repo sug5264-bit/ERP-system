@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
-import { api } from "@/lib/api";
+import { api, uploadFile } from "@/lib/api";
 
 type CompanyProfile = {
   id?: number;
@@ -186,6 +186,23 @@ export default function CompanyProfilePage() {
             />
           </Section>
 
+          <Section title="로고 / 직인 (PDF 양식에 자동 합성)">
+            <ImageUpload
+              label="로고"
+              endpoint="/api/company-profile/upload-logo"
+              previewUrl="/api/company-profile/logo"
+              onDone={() => setMessage("로고 업로드 완료")}
+              onError={(e) => setError(e)}
+            />
+            <ImageUpload
+              label="직인"
+              endpoint="/api/company-profile/upload-stamp"
+              previewUrl="/api/company-profile/stamp"
+              onDone={() => setMessage("직인 업로드 완료")}
+              onError={(e) => setError(e)}
+            />
+          </Section>
+
           <div className="pt-4">
             <button
               type="submit"
@@ -230,5 +247,73 @@ function Field({
         className="mt-1 block w-full rounded border-gray-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 px-3 py-2 border"
       />
     </label>
+  );
+}
+
+function ImageUpload({
+  label,
+  endpoint,
+  previewUrl,
+  onDone,
+  onError,
+}: {
+  label: string;
+  endpoint: string;
+  previewUrl: string;
+  onDone: () => void;
+  onError: (s: string) => void;
+}) {
+  const [previewKey, setPreviewKey] = useState(0);
+  const [busy, setBusy] = useState(false);
+
+  const pick = () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/jpeg";
+    input.onchange = async () => {
+      const f = input.files?.[0];
+      if (!f) return;
+      setBusy(true);
+      try {
+        await uploadFile(endpoint, f);
+        setPreviewKey((k) => k + 1);
+        onDone();
+      } catch (e) {
+        onError(String(e));
+      } finally {
+        setBusy(false);
+      }
+    };
+    input.click();
+  };
+
+  return (
+    <div className="block text-sm">
+      <div className="text-gray-700 mb-2">{label}</div>
+      <div className="flex gap-3 items-center">
+        <div
+          className="w-24 h-24 border rounded bg-gray-50 flex items-center justify-center overflow-hidden"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            key={previewKey}
+            src={`${previewUrl}?v=${previewKey}`}
+            alt={label}
+            className="max-w-full max-h-full object-contain"
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).style.display = "none";
+            }}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={pick}
+          disabled={busy}
+          className="px-3 py-1 rounded border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50"
+        >
+          {busy ? "업로드 중..." : "이미지 선택 (PNG/JPG, 2MB↓)"}
+        </button>
+      </div>
+    </div>
   );
 }

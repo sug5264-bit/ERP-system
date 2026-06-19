@@ -458,6 +458,8 @@ def _resolve_company_and_customer(db: Session, shipment: Shipment):
         business_item=cp.business_item,
         phone=cp.phone,
         fax=cp.fax,
+        logo_path=cp.logo_path,
+        stamp_path=cp.stamp_path,
     )
     if not cust:
         raise HTTPException(status_code=404, detail="거래처 정보를 찾을 수 없습니다.")
@@ -607,3 +609,115 @@ def mark_returned(ship_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(s)
     return s
+
+
+# ─── 출고 → 청구서 자동 draft ────────────────────────────────────────
+
+
+@router.post(
+    "/shipments/{ship_id}/generate-invoice",
+    dependencies=[Depends(require_module_role("sales", "manager"))],
+)
+def generate_invoice_from_shipment(
+    ship_id: int,
+    tax_rate: Decimal = Decimal("0.10"),
+    db: Session = Depends(get_db),
+):
+    """출고 1건 → 청구서(Invoice) draft 자동 생성.
+
+    - 동일 shipment의 invoice가 이미 있으면 기존 ID를 반환 (멱등)
+    - line_total은 picked_qty * SO 라인 단가
+    - 부가세는 tax_rate (기본 10%, 면세는 0)
+    - invoice_no 자동 생성: 'INV-<shipment_no>'
+    - draft 상태로 저장 — 발행은 별도 /api/billing/invoices/{id}/issue 호출
+    """
+    from app.modules.billing.models import Invoice, InvoiceItem, InvoiceStatus
+    from app.modules.inventory.models import Item
+    from app.modules.sales.models import SalesOrderItem
+
+    s = db.query(Shipment).filter(Shipment.id == ship_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+
+    so = db.query(SalesOrder).filter(SalesOrder.id == s.sales_order_id).first()
+    if not so:
+        raise HTTPException(status_code=404, detail="Sales order not found")
+
+    invoice_no = f"INV-{s.shipment_no}"
+    existing = db.query(Invoice).filter(Invoice.invoice_no == invoice_no).first()
+    if existing:
+        return {
+            "invoice_id": existing.id,
+            "invoice_no": existing.invoice_no,
+            "status": existing.status.value,
+            "already_exists": True,
+        }
+
+    pl = (
+        db.query(PickList)
+        .options(selectinload(PickList.items))
+        .filter(PickList.id == s.pick_list_id)
+        .first()
+    )
+    if not pl or not pl.items:
+        raise HTTPException(
+            status_code=400, detail="출고할 품목이 없어 청구서 생성 불가"
+        )
+
+    # 단가 매핑 (SO 라인 단가 우선)
+    so_lines = (
+        db.query(SalesOrderItem)
+        .filter(SalesOrderItem.order_id == so.id)
+        .all()
+    )
+    so_price_by_item: dict[int, Decimal] = {}
+    for sol in so_lines:
+        so_price_by_item.setdefault(sol.item_id, Decimal(sol.unit_price))
+
+    item_ids = [li.item_id for li in pl.items]
+    items_by_id = {
+        i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()
+    }
+
+    inv = Invoice(
+        invoice_no=invoice_no,
+        customer_id=so.customer_id,
+        sales_order_id=so.id,
+        status=InvoiceStatus.draft,
+        notes=f"출고 {s.shipment_no} 자동 생성",
+    )
+    subtotal = Decimal(0)
+    for li in pl.items:
+        qty = Decimal(li.picked_qty) if Decimal(li.picked_qty) > 0 else Decimal(li.requested_qty)
+        if qty <= 0:
+            continue
+        prod = items_by_id.get(li.item_id)
+        if not prod:
+            continue
+        unit_price = so_price_by_item.get(li.item_id, Decimal(prod.unit_price or 0))
+        line_total = (qty * unit_price).quantize(Decimal("0.01"))
+        subtotal += line_total
+        inv.items.append(
+            InvoiceItem(
+                description=prod.name,
+                item_id=prod.id,
+                quantity=qty,
+                unit_price=unit_price,
+                line_total=line_total,
+            )
+        )
+    inv.subtotal = subtotal
+    inv.tax = (subtotal * Decimal(tax_rate)).quantize(Decimal("0.01"))
+    inv.total = inv.subtotal + inv.tax
+    db.add(inv)
+    db.commit()
+    db.refresh(inv)
+    return {
+        "invoice_id": inv.id,
+        "invoice_no": inv.invoice_no,
+        "status": inv.status.value,
+        "subtotal": float(inv.subtotal),
+        "tax": float(inv.tax),
+        "total": float(inv.total),
+        "already_exists": False,
+    }
