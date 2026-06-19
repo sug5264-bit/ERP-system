@@ -4,7 +4,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.core.business_no import format_business_no, is_valid_business_no
-from app.modules.sales.models import OrderStatus
+from app.modules.sales.models import CustomerType, OrderStatus
 
 
 def _check_biz_no(v: str | None) -> str | None:
@@ -21,6 +21,9 @@ class CustomerBase(BaseModel):
     email: EmailStr | None = None
     phone: str | None = None
     company: str | None = None
+    customer_type: CustomerType = CustomerType.business
+    external_id: str | None = None
+    external_source: str | None = None
     business_no: str | None = None
     representative: str | None = None
     address: str | None = None
@@ -46,6 +49,9 @@ class CustomerUpdate(BaseModel):
     email: EmailStr | None = None
     phone: str | None = None
     company: str | None = None
+    customer_type: CustomerType | None = None
+    external_id: str | None = None
+    external_source: str | None = None
     business_no: str | None = None
     representative: str | None = None
     address: str | None = None

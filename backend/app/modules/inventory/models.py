@@ -30,6 +30,9 @@ class Item(BaseEntity):
     carbs_g_per_100g: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
     fat_g_per_100g: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
     sodium_mg_per_100g: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    # 외부 쇼핑몰 상품 코드 (카페24/네이버/쿠팡 등) — 주문 import 시 SKU 매칭에 사용.
+    # 쇼핑몰별 상품ID가 다른 경우 외부 SKU 컬럼으로 한 번 더 매핑.
+    external_sku: Mapped[str | None] = mapped_column(String(100), index=True)
 
 
 class Warehouse(BaseEntity):

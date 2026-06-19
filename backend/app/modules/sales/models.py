@@ -14,6 +14,16 @@ class OrderStatus(str, PyEnum):
     cancelled = "cancelled"
 
 
+class CustomerType(str, PyEnum):
+    """거래처 유형 — 세금계산서·거래명세표 발행 대상 결정.
+
+    - business: 사업자 (B2B) — 세금계산서, 거래명세표
+    - individual: 일반 소비자 (B2C) — 간이 영수증
+    """
+    business = "business"
+    individual = "individual"
+
+
 class Customer(BaseEntity):
     """거래처 (매출처). 한국식 세금계산서/거래명세표 발행에 필요한
     사업자등록증 항목을 모두 보유."""
@@ -24,6 +34,12 @@ class Customer(BaseEntity):
     email: Mapped[str | None] = mapped_column(String(255))
     phone: Mapped[str | None] = mapped_column(String(50))
     company: Mapped[str | None] = mapped_column(String(200))
+    customer_type: Mapped[CustomerType] = mapped_column(
+        Enum(CustomerType), default=CustomerType.business, nullable=False, index=True
+    )
+    # 외부 쇼핑몰 식별자 (카페24, 네이버, 쿠팡 회원ID 등) — import 시 매칭용
+    external_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    external_source: Mapped[str | None] = mapped_column(String(50))  # cafe24/naver/coupang
     # 사업자등록증 항목 (세금계산서/거래명세표 필수)
     business_no: Mapped[str | None] = mapped_column(String(20), index=True)
     representative: Mapped[str | None] = mapped_column(String(100))

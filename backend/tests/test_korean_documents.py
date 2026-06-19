@@ -1101,6 +1101,285 @@ def test_po_receive_rejects_zero_or_negative(client, db_session, admin_auth):
     assert res.status_code == 400
 
 
+# ────── 10. 외부 쇼핑몰 백오피스 — 주문/송장 import + 간이영수증 ──────
+
+
+def test_orders_import_creates_so_with_lines(client, db_session, admin_auth):
+    """카페24 양식 주문 → SO 1건 + 라인 2개 자동 생성."""
+    import io as _io
+    from openpyxl import Workbook
+    from app.modules.inventory.models import Item
+    from app.modules.sales.models import (
+        Customer, CustomerType, SalesOrder, SalesOrderItem,
+    )
+
+    # 상품 먼저
+    db_session.add(Item(sku="WG-RAD-LE-330", name="라들러 레몬", unit="CAN", unit_price=Decimal("2500")))
+    db_session.add(Item(sku="WG-COLA-355", name="콜라", unit="CAN", unit_price=Decimal("1500")))
+    db_session.commit()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["주문번호", "주문일자", "고객명", "전화", "이메일",
+               "배송주소", "SKU", "상품명", "수량", "단가",
+               "쇼핑몰", "쇼핑몰주문ID", "비고"])
+    ws.append(["WEB-001", "2026-06-19", "홍길동", "010-1234-5678",
+               "hong@x.com", "서울 강남 1", "WG-RAD-LE-330", "라들러 레몬",
+               24, 2500, "카페24", "C24-100001", ""])
+    ws.append(["WEB-001", "2026-06-19", "홍길동", "010-1234-5678",
+               "hong@x.com", "서울 강남 1", "WG-COLA-355", "콜라",
+               12, 1500, "카페24", "C24-100001", ""])
+    buf = _io.BytesIO()
+    wb.save(buf)
+
+    res = client.post(
+        "/api/sales/orders/import",
+        files={"file": ("orders.xlsx", buf.getvalue(),
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["created_orders"] == 1
+    assert body["errors"] == []
+
+    # DB 검증
+    db_session.expire_all()
+    so = db_session.query(SalesOrder).filter(SalesOrder.order_no == "WEB-001").first()
+    assert so is not None
+    assert len(so.items) == 2
+
+    cust = db_session.query(Customer).filter(Customer.phone == "010-1234-5678").first()
+    assert cust is not None
+    assert cust.customer_type == CustomerType.individual  # default
+    assert cust.external_source == "카페24"
+
+
+def test_orders_import_unknown_sku_records_error(client, db_session, admin_auth):
+    """매칭 안되는 SKU는 errors[]에 기록, SO 만들지 않음."""
+    import io as _io
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["주문번호", "주문일자", "고객명", "전화", "SKU", "수량", "단가"])
+    ws.append(["WEB-X", "2026-06-19", "이름", "010-1111-2222",
+               "NOT-EXISTING", 1, 1000])
+    buf = _io.BytesIO()
+    wb.save(buf)
+
+    res = client.post(
+        "/api/sales/orders/import",
+        files={"file": ("o.xlsx", buf.getvalue(),
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["created_orders"] == 0
+    assert len(body["errors"]) >= 1
+    assert "SKU" in body["errors"][0]["reason"]
+
+
+def test_orders_import_with_auto_confirm_deducts_stock(client, db_session, admin_auth):
+    """auto_confirm=true 시 재고 자동 차감."""
+    import io as _io
+    from openpyxl import Workbook
+    from app.modules.inventory.models import Item
+
+    item = Item(sku="ONL-1", name="온라인상품", unit_price=Decimal("1000"),
+                stock_qty=Decimal("100"))
+    db_session.add(item)
+    db_session.commit()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["주문번호", "고객명", "전화", "SKU", "수량", "단가"])
+    ws.append(["AUTO-1", "구매자", "010-9999-8888", "ONL-1", 5, 1000])
+    buf = _io.BytesIO()
+    wb.save(buf)
+
+    res = client.post(
+        "/api/sales/orders/import?auto_confirm=true",
+        files={"file": ("o.xlsx", buf.getvalue(),
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["confirmed_orders"] == 1
+
+    db_session.expire_all()
+    item = db_session.query(Item).filter(Item.sku == "ONL-1").first()
+    assert int(item.stock_qty) == 95  # 100 - 5
+
+
+def test_orders_import_external_sku_matching(client, db_session, admin_auth):
+    """external_sku 로도 매칭 가능 (쇼핑몰 코드 ≠ 내부 SKU)."""
+    import io as _io
+    from openpyxl import Workbook
+    from app.modules.inventory.models import Item
+
+    item = Item(sku="INT-A1", name="국내", unit_price=Decimal("5000"),
+                external_sku="C24-PROD-99")
+    db_session.add(item)
+    db_session.commit()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["주문번호", "고객명", "전화", "SKU", "수량"])
+    # SKU 컬럼에 쇼핑몰 코드 넣어도 매칭
+    ws.append(["EXT-1", "외부고객", "010-7777-7777", "C24-PROD-99", 2])
+    buf = _io.BytesIO()
+    wb.save(buf)
+
+    res = client.post(
+        "/api/sales/orders/import",
+        files={"file": ("o.xlsx", buf.getvalue(),
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["created_orders"] == 1
+
+
+def test_shipment_tracking_import(client, db_session, admin_auth):
+    """송장번호 일괄 등록 → auto_ship 자동 출하."""
+    import io as _io
+    from openpyxl import Workbook
+    from app.modules.inventory.models import Item
+    from app.modules.sales.models import OrderStatus, SalesOrder
+    from app.modules.wms.models import (
+        PickList, PickListItem, PickStatus, Shipment, ShipmentStatus,
+    )
+
+    item = Item(sku="SHP-X", name="X", unit_price=Decimal("1000"))
+    db_session.add(item)
+    db_session.flush()
+    so = SalesOrder(
+        order_no="SO-TRK", customer_id=1, status=OrderStatus.confirmed,
+    )
+    db_session.add(so)
+    db_session.flush()
+    pl = PickList(pick_no="PL-TRK", sales_order_id=so.id, status=PickStatus.picked)
+    pl.items.append(PickListItem(item_id=item.id, requested_qty=Decimal("1"), picked_qty=Decimal("1")))
+    db_session.add(pl)
+    db_session.flush()
+    s = Shipment(
+        shipment_no="SHP-TRK-1",
+        pick_list_id=pl.id,
+        sales_order_id=so.id,
+        status=ShipmentStatus.packed,
+    )
+    db_session.add(s)
+    db_session.commit()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["송장번호(SHP)", "택배사", "운송장번호", "무게(kg)"])
+    ws.append(["SHP-TRK-1", "CJ대한통운", "612345678901", 2.5])
+    ws.append(["SHP-NOT-EXISTS", "한진", "999", 1])  # 매칭 실패
+    buf = _io.BytesIO()
+    wb.save(buf)
+
+    res = client.post(
+        "/api/wms/shipments/import-tracking",
+        files={"file": ("trk.xlsx", buf.getvalue(),
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["updated"] == 1
+    assert body["shipped"] == 1
+    assert len(body["errors"]) == 1
+
+    db_session.expire_all()
+    s2 = db_session.query(Shipment).filter(Shipment.shipment_no == "SHP-TRK-1").first()
+    assert s2.tracking_no == "612345678901"
+    assert s2.carrier == "CJ대한통운"
+    assert s2.status == ShipmentStatus.shipped
+
+
+def test_individual_customer_gets_simple_receipt(client, db_session, admin_auth):
+    """일반 소비자(individual) 출고 시 거래명세표 → 간이영수증 자동 전환."""
+    from app.modules.inventory.models import Item
+    from app.modules.sales.models import (
+        Customer, CustomerType, OrderStatus, SalesOrder, SalesOrderItem,
+    )
+    from app.modules.wms.models import (
+        PickList, PickListItem, PickStatus, Shipment,
+    )
+
+    # 회사정보
+    client.put(
+        "/api/company-profile",
+        json={
+            "business_no": "206-87-06151",
+            "company_name": "(주)웰그린",
+            "representative": "김대표",
+            "address": "서울",
+        },
+        headers=admin_auth["headers"],
+    )
+
+    cust = Customer(
+        name="홍길동",
+        phone="010-1234-5678",
+        customer_type=CustomerType.individual,
+        external_source="카페24",
+    )
+    db_session.add(cust)
+    item = Item(sku="ONL-RECEIPT", name="온라인상품", unit_price=Decimal("10000"))
+    db_session.add(item)
+    db_session.flush()
+    so = SalesOrder(
+        order_no="WEB-100", customer_id=cust.id, status=OrderStatus.confirmed,
+    )
+    so.items.append(SalesOrderItem(item_id=item.id, quantity=Decimal("2"), unit_price=Decimal("10000")))
+    db_session.add(so)
+    db_session.flush()
+    pl = PickList(pick_no="PL-100", sales_order_id=so.id, status=PickStatus.picked)
+    pl.items.append(PickListItem(item_id=item.id, requested_qty=Decimal("2"), picked_qty=Decimal("2")))
+    db_session.add(pl)
+    db_session.flush()
+    s = Shipment(shipment_no="SHP-100", pick_list_id=pl.id, sales_order_id=so.id)
+    db_session.add(s)
+    db_session.commit()
+
+    res = client.get(
+        f"/api/wms/shipments/{s.id}/transaction-statement.pdf",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200
+    assert res.content.startswith(b"%PDF-")
+    # Content-Disposition에 '영수증' 포함 (거래명세표가 아님)
+    cd = res.headers.get("content-disposition", "")
+    assert "%EC%98%81%EC%88%98%EC%A6%9D" in cd  # '영수증' URL 인코딩
+
+
+def test_simple_receipt_unit():
+    """간이 영수증 PDF 생성 단위 검증."""
+    from app.core.docs_pdf import LineItem, PartyInfo, render_simple_receipt
+
+    company = PartyInfo(
+        business_no="206-87-06151", company_name="(주)웰그린",
+        representative="김대표", address="서울 강남",
+        phone="02-1234-5678",
+    )
+    items = [
+        LineItem(no=1, name="유기농 토마토", spec="1kg", qty=Decimal("3"),
+                 unit="BOX", unit_price=Decimal("15000"),
+                 supply_amount=Decimal("45000"), tax_amount=Decimal("4500")),
+    ]
+    pdf = render_simple_receipt(
+        company, "홍길동", items,
+        doc_no="WEB-001", doc_date=date(2026, 6, 19),
+        delivery_address="서울 강남구 1", shop_name="카페24",
+    )
+    assert pdf.startswith(b"%PDF-")
+    assert len(pdf) > 3000
+
+
 def test_company_stamp_upload_rejects_non_image(client, admin_auth):
     client.put(
         "/api/company-profile",

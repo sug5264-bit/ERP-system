@@ -258,6 +258,269 @@ def export_orders(
     return export_table(rows, headers, "orders", format, inline=inline)
 
 
+# ---- 외부 쇼핑몰 주문 일괄 import ───────────────────────────────────
+
+
+@router.get("/orders/import-template")
+def orders_import_template(format: str = Query("xlsx")):
+    """온라인 주문 일괄등록 양식 다운로드 (표준).
+
+    헤더는 카페24·네이버·쿠팡 등 모든 주요 쇼핑몰의 export 양식과 호환되도록
+    한글/영문 별칭 다중 인식. 한 SO에 라인 N개면 라인마다 한 행, '주문번호'로 묶음.
+    """
+    headers = [
+        "주문번호", "주문일자", "고객명", "전화", "이메일",
+        "배송주소", "SKU", "상품명", "수량", "단가",
+        "쇼핑몰", "쇼핑몰주문ID", "비고",
+    ]
+    sample = [
+        ["WEB-20260619-001", "2026-06-19", "홍길동", "010-1234-5678",
+         "hong@example.com", "서울 강남구 테헤란로 1, 101호",
+         "WG-RAD-LE-330", "웰그린 라들러 레몬 330ml", 24, 2500,
+         "카페24", "C24-100001", "오전배송"],
+        ["WEB-20260619-001", "2026-06-19", "홍길동", "010-1234-5678",
+         "hong@example.com", "서울 강남구 테헤란로 1, 101호",
+         "WG-COLA-355", "웰그린 콜라 355ml", 12, 1500,
+         "카페24", "C24-100001", ""],
+    ]
+    return export_table(sample, headers, "orders_import_template", format)
+
+
+@router.post(
+    "/orders/import",
+    dependencies=[Depends(require_role("admin"))],
+)
+async def import_orders(
+    file: UploadFile = File(...),
+    auto_confirm: bool = Query(
+        False,
+        description="True면 import 즉시 SO 확정 + 재고차감. 권장: False(draft)",
+    ),
+    default_customer_type: str = Query(
+        "individual",
+        description="새로 생성되는 고객 유형 — individual 또는 business",
+    ),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    tenant_id: int | None = Depends(get_current_tenant_id),
+):
+    """외부 쇼핑몰 주문 일괄 import.
+
+    1. 행마다 SKU/external_sku 로 Item 매칭 → 못 찾으면 errors
+    2. (전화 또는 이메일 또는 쇼핑몰주문ID)로 Customer 매칭, 없으면 자동 생성
+       · 새 고객의 customer_type = default_customer_type (기본 individual)
+    3. 동일 '주문번호'끼리 묶어서 SO 1건 생성 (라인 N개)
+    4. auto_confirm=true 면 즉시 SO confirm → 재고 차감 + COGS 분개
+       (재고 부족이면 그 SO만 draft 유지하고 errors 기록)
+
+    카페24/네이버 스마트스토어/쿠팡 양식 모두 헤더 별칭으로 매핑.
+    """
+    from datetime import date as _date
+    from decimal import Decimal as _D, InvalidOperation
+
+    from app.core.imports import parse_upload
+    from app.modules.inventory.models import Item
+    from app.modules.sales.models import (
+        Customer, CustomerType, OrderStatus, SalesOrder, SalesOrderItem,
+    )
+
+    if default_customer_type not in ("individual", "business"):
+        raise HTTPException(
+            status_code=400,
+            detail="default_customer_type은 individual 또는 business",
+        )
+
+    alias = {
+        # 주문 번호 / 일자
+        "주문번호": "order_no", "order_no": "order_no", "ordercode": "order_no",
+        "주문일자": "order_date", "order_date": "order_date", "결제일": "order_date",
+        # 고객
+        "고객명": "customer_name", "이름": "customer_name", "구매자": "customer_name",
+        "수령인": "customer_name", "name": "customer_name",
+        "전화": "phone", "연락처": "phone", "phone": "phone", "휴대폰": "phone",
+        "이메일": "email", "email": "email",
+        "배송주소": "address", "주소": "address", "address": "address",
+        # 품목
+        "sku": "sku", "SKU": "sku", "상품코드": "sku", "코드": "sku",
+        "상품명": "item_name", "품목명": "item_name", "item_name": "item_name",
+        "수량": "qty", "qty": "qty", "quantity": "qty",
+        "단가": "unit_price", "가격": "unit_price", "unit_price": "unit_price",
+        "판매가": "unit_price",
+        # 메타
+        "쇼핑몰": "shop", "쇼핑몰명": "shop", "shop": "shop", "channel": "shop",
+        "쇼핑몰주문id": "external_order_id", "외부주문id": "external_order_id",
+        "쇼핑몰주문번호": "external_order_id",
+        "비고": "notes", "memo": "notes", "notes": "notes",
+    }
+    rows = await parse_upload(file, alias)
+
+    # 1) 주문번호별 그룹핑
+    by_order: dict[str, list[dict]] = {}
+    for idx, r in enumerate(rows, start=2):
+        order_no = str(r.get("order_no") or "").strip()
+        if not order_no:
+            order_no = str(r.get("external_order_id") or "").strip()
+        if not order_no:
+            r["_idx"] = idx
+            r["_error"] = "주문번호와 쇼핑몰주문ID 모두 비어있음"
+            by_order.setdefault("__bad__", []).append(r)
+            continue
+        r["_idx"] = idx
+        by_order.setdefault(order_no, []).append(r)
+
+    created_orders = 0
+    confirmed_orders = 0
+    skipped_orders = 0
+    errors: list[dict] = []
+    enum_type = CustomerType.individual if default_customer_type == "individual" else CustomerType.business
+
+    # 잘못된 행 먼저 에러 처리
+    for bad in by_order.pop("__bad__", []):
+        errors.append({"row": bad["_idx"], "reason": bad["_error"]})
+
+    for order_no, lines in by_order.items():
+        # 기존 SO 있으면 skip
+        if db.query(SalesOrder).filter(SalesOrder.order_no == order_no).first():
+            skipped_orders += 1
+            continue
+
+        first = lines[0]
+        cust_name = str(first.get("customer_name") or "").strip() or "온라인고객"
+        phone = str(first.get("phone") or "").strip() or None
+        email = str(first.get("email") or "").strip() or None
+        address = str(first.get("address") or "").strip() or None
+        shop = str(first.get("shop") or "").strip() or None
+        ext_order_id = str(first.get("external_order_id") or "").strip() or None
+
+        # Customer 매칭 — 외부ID > 전화 > 이메일 > 이름
+        cust = None
+        if ext_order_id and shop:
+            cust = (
+                db.query(Customer)
+                .filter(
+                    Customer.external_id == ext_order_id,
+                    Customer.external_source == shop,
+                )
+                .first()
+            )
+        if not cust and phone:
+            cust = db.query(Customer).filter(Customer.phone == phone).first()
+        if not cust and email:
+            cust = db.query(Customer).filter(Customer.email == email).first()
+        if not cust:
+            cust = Customer(
+                name=cust_name,
+                phone=phone,
+                email=email,
+                address=address,
+                customer_type=enum_type,
+                external_id=ext_order_id,
+                external_source=shop,
+                owner_id=user.id,
+                tenant_id=tenant_id,
+            )
+            db.add(cust)
+            db.flush()
+
+        # 일자 파싱
+        try:
+            order_date_raw = first.get("order_date")
+            if isinstance(order_date_raw, _date):
+                order_date = order_date_raw
+            elif order_date_raw:
+                # 2026-06-19 또는 2026/06/19 둘 다
+                txt = str(order_date_raw).split(" ")[0].replace("/", "-")
+                y, m, d = txt.split("-")[:3]
+                order_date = _date(int(y), int(m), int(d))
+            else:
+                order_date = _date.today()
+        except Exception:
+            order_date = _date.today()
+
+        # 라인 변환
+        so_lines: list[SalesOrderItem] = []
+        total = _D("0")
+        line_errors: list[str] = []
+        for ln in lines:
+            sku = str(ln.get("sku") or "").strip()
+            if not sku:
+                line_errors.append(f"{ln['_idx']}행: SKU 누락")
+                continue
+            item = (
+                db.query(Item)
+                .filter((Item.sku == sku) | (Item.external_sku == sku))
+                .first()
+            )
+            if not item:
+                line_errors.append(f"{ln['_idx']}행: SKU '{sku}' 매칭 안됨")
+                continue
+            try:
+                qty = _D(str(ln.get("qty") or "0"))
+                unit_price = _D(str(ln.get("unit_price") or item.unit_price or 0))
+            except InvalidOperation:
+                line_errors.append(f"{ln['_idx']}행: 수량/단가 파싱 실패")
+                continue
+            if qty <= 0:
+                line_errors.append(f"{ln['_idx']}행: 수량 0 이하")
+                continue
+            so_lines.append(
+                SalesOrderItem(item_id=item.id, quantity=qty, unit_price=unit_price)
+            )
+            total += qty * unit_price
+
+        if not so_lines:
+            errors.append({
+                "row": first["_idx"],
+                "reason": f"{order_no}: 유효 라인 없음 ({'; '.join(line_errors)})",
+            })
+            continue
+        if line_errors:
+            # 일부 라인만 실패 — SO는 만들되 에러 기록
+            for le in line_errors:
+                errors.append({"row": first["_idx"], "reason": f"{order_no}: {le}"})
+
+        so = SalesOrder(
+            order_no=order_no,
+            customer_id=cust.id,
+            order_date=order_date,
+            status=OrderStatus.draft,
+            total=total,
+            owner_id=user.id,
+            tenant_id=tenant_id,
+        )
+        for sl in so_lines:
+            so.items.append(sl)
+        db.add(so)
+        db.flush()
+        created_orders += 1
+
+        # auto_confirm: 재고 차감 + COGS — 부족하면 draft 유지하고 에러
+        if auto_confirm:
+            try:
+                from app.modules.sales import service
+                service.confirm_order(db, so.id)
+                confirmed_orders += 1
+            except ValueError as exc:
+                errors.append({
+                    "row": first["_idx"],
+                    "reason": f"{order_no} 확정 실패 (draft 유지): {exc}",
+                })
+
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"저장 실패: {exc}")
+
+    return {
+        "created_orders": created_orders,
+        "confirmed_orders": confirmed_orders,
+        "skipped_orders": skipped_orders,
+        "errors": errors,
+        "total_rows": len(rows),
+    }
+
+
 @router.post(
     "/orders",
     response_model=SalesOrderOut,

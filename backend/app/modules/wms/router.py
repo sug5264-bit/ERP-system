@@ -3,7 +3,7 @@ shipment → ship → deliver."""
 from datetime import date, datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session, selectinload
 
@@ -508,16 +508,39 @@ def _serial_for(shipment: Shipment, doc_date: date) -> str:
 def shipment_transaction_statement_pdf(
     ship_id: int, db: Session = Depends(get_db)
 ):
-    """거래명세표 PDF — 실무 표준 양식 (A4 1장 보관용+인수용 2부)."""
-    from app.core.docs_pdf import render_transaction_statement_v2
+    """거래명세표 PDF — 실무 표준 양식 (A4 1장 보관용+인수용 2부).
+
+    customer_type='individual' (일반 소비자) 인 경우 사업자 정보가 비어있어
+    빈 양식이 나오므로, 자동으로 간이 영수증(render_simple_receipt)으로 전환.
+    """
+    from app.core.docs_pdf import render_simple_receipt, render_transaction_statement_v2
+    from app.modules.sales.models import Customer, CustomerType
 
     s = db.query(Shipment).filter(Shipment.id == ship_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Shipment not found")
     company, customer, cp = _resolve_company_and_customer(db, s)
     lines = _shipment_to_line_items(db, s)
-
     doc_date = (s.shipped_at or s.packed_at or datetime.utcnow()).date()
+
+    # 고객 유형 확인 — individual 이면 간이 영수증
+    so = db.query(SalesOrder).filter(SalesOrder.id == s.sales_order_id).first()
+    raw_cust = (
+        db.query(Customer).filter(Customer.id == so.customer_id).first() if so else None
+    )
+    if raw_cust and raw_cust.customer_type == CustomerType.individual:
+        pdf = render_simple_receipt(
+            company,
+            customer_name=raw_cust.name,
+            items=lines,
+            doc_no=s.shipment_no,
+            doc_date=doc_date,
+            delivery_address=s.address_to,
+            shop_name=raw_cust.external_source,
+        )
+        return _pdf_response(pdf, f"영수증_{s.shipment_no}.pdf")
+
+    # 사업자 거래처 — 표준 거래명세서 (2부)
     opening, _, _ = _customer_balances(
         db, _customer_id_of(db, s), doc_date
     )
@@ -732,4 +755,104 @@ def generate_invoice_from_shipment(
         "tax": float(inv.tax),
         "total": float(inv.total),
         "already_exists": False,
+    }
+
+
+# ─── 송장번호 일괄 import (Excel/CSV) ────────────────────────────────
+
+
+@router.get("/shipments/import-template")
+def shipments_import_template(format: str = Query("xlsx")):
+    """송장 일괄등록 양식 — 출고 후 운송장번호 한꺼번에 등록할 때 사용."""
+    from app.core.exports import export_table
+
+    headers = ["송장번호(SHP)", "택배사", "운송장번호", "무게(kg)"]
+    sample = [
+        ["SHP-WEB-20260619-001", "CJ대한통운", "612345678901", 2.5],
+        ["SHP-WEB-20260619-002", "한진택배", "789012345678", 1.2],
+    ]
+    return export_table(sample, headers, "shipments_import_template", format)
+
+
+@router.post(
+    "/shipments/import-tracking",
+    dependencies=[Depends(require_module_role("inventory", "manager"))],
+)
+async def import_shipment_tracking(
+    file: UploadFile = File(...),
+    auto_ship: bool = Query(
+        True, description="True면 일괄 등록과 동시에 'shipped' 전이"
+    ),
+    db: Session = Depends(get_db),
+):
+    """택배사/운송장번호를 Excel/CSV로 일괄 등록.
+
+    송장번호(SHP) 컬럼으로 Shipment 매칭. 매칭 안되면 errors 누적.
+    auto_ship=True면 등록 후 즉시 ShipmentStatus.shipped로 전이 + shipped_at 기록.
+    """
+    from datetime import datetime as _dt
+
+    from app.core.imports import parse_upload
+
+    alias = {
+        "송장번호": "shipment_no", "송장": "shipment_no", "shipment_no": "shipment_no",
+        "송장번호(shp)": "shipment_no", "shp": "shipment_no",
+        "택배사": "carrier", "carrier": "carrier", "택배": "carrier",
+        "운송장번호": "tracking_no", "운송장": "tracking_no", "tracking_no": "tracking_no",
+        "tracking": "tracking_no",
+        "무게": "weight_kg", "무게(kg)": "weight_kg", "weight": "weight_kg",
+        "weight_kg": "weight_kg",
+    }
+    rows = await parse_upload(file, alias)
+
+    from decimal import Decimal as _D, InvalidOperation
+    updated = 0
+    shipped = 0
+    skipped = 0
+    errors: list[dict] = []
+
+    for idx, r in enumerate(rows, start=2):
+        shp_no = str(r.get("shipment_no") or "").strip()
+        if not shp_no:
+            errors.append({"row": idx, "reason": "송장번호 비어있음"})
+            continue
+        s = db.query(Shipment).filter(Shipment.shipment_no == shp_no).first()
+        if not s:
+            errors.append({"row": idx, "reason": f"매칭되는 출고 없음: {shp_no}"})
+            continue
+        carrier = str(r.get("carrier") or "").strip() or None
+        tracking = str(r.get("tracking_no") or "").strip() or None
+        weight = r.get("weight_kg")
+        try:
+            weight_dec = _D(str(weight)) if weight not in (None, "") else None
+        except InvalidOperation:
+            weight_dec = None
+
+        if carrier:
+            s.carrier = carrier
+        if tracking:
+            s.tracking_no = tracking
+        if weight_dec is not None:
+            s.weight_kg = weight_dec
+
+        if auto_ship and s.status == ShipmentStatus.packed:
+            s.status = ShipmentStatus.shipped
+            s.shipped_at = _dt.utcnow()
+            shipped += 1
+        elif auto_ship and s.status != ShipmentStatus.packed:
+            skipped += 1  # 이미 출하/배송완료 등
+        updated += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"저장 실패: {exc}")
+
+    return {
+        "updated": updated,
+        "shipped": shipped,
+        "skipped_not_packed": skipped,
+        "errors": errors,
+        "total_rows": len(rows),
     }

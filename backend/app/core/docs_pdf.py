@@ -940,6 +940,129 @@ def render_transaction_statement_v2(
     return _build(story)
 
 
+def render_simple_receipt(
+    company: PartyInfo,
+    customer_name: str,
+    items: Sequence[LineItem],
+    *,
+    doc_no: str,
+    doc_date: date,
+    delivery_address: str | None = None,
+    shop_name: str | None = None,
+) -> bytes:
+    """간이 영수증 — 일반 소비자(BtoC) 용. 사업자등록증 항목 노출 안 함.
+
+    공급자 박스 없이 자사 정보를 위에 1줄로만 표기. 품목·수량·금액·합계만.
+    온라인 쇼핑몰 주문 → 동봉 영수증 용도.
+    """
+    supply = sum((Decimal(i.supply_amount) for i in items), Decimal(0))
+    tax = sum((Decimal(i.tax_amount) for i in items), Decimal(0))
+    total = supply + tax
+
+    story: list = []
+    # 제목
+    story.append(_para("영  수  증", size=22, align="CENTER", bold=True))
+    story.append(Spacer(1, 4 * mm))
+
+    # 자사 정보 1줄
+    company_line = f"{company.company_name}"
+    if company.phone:
+        company_line += f"  ☎ {company.phone}"
+    story.append(_para(company_line, size=10, align="CENTER"))
+    if company.address:
+        story.append(_para(company.address, size=9, align="CENTER"))
+    story.append(Spacer(1, 4 * mm))
+
+    # 주문 정보 (수령인, 일자, 주문번호)
+    info_rows = [
+        [_para("주문번호", size=9, align="CENTER", bold=True), _para(doc_no, size=10)],
+        [_para("주문일자", size=9, align="CENTER", bold=True),
+         _para(doc_date.strftime("%Y년 %m월 %d일"), size=10)],
+        [_para("수령인", size=9, align="CENTER", bold=True), _para(customer_name, size=10)],
+    ]
+    if delivery_address:
+        info_rows.append([
+            _para("배송지", size=9, align="CENTER", bold=True),
+            _para(delivery_address, size=10),
+        ])
+    if shop_name:
+        info_rows.append([
+            _para("판매채널", size=9, align="CENTER", bold=True),
+            _para(shop_name, size=10),
+        ])
+    info_t = Table(info_rows, colWidths=[24 * mm, 156 * mm])
+    info_t.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), _FONT),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#94a3b8")),
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f1f5f9")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+    )
+    story.append(info_t)
+    story.append(Spacer(1, 4 * mm))
+
+    # 품목 테이블 (간소화 — 부가세 별도 표기 안 함, 합계만)
+    headers = ["No", "품목", "수량", "단가", "금액"]
+    col_widths = [12 * mm, 100 * mm, 18 * mm, 24 * mm, 26 * mm]
+    data = [[_para(h, size=9, align="CENTER", bold=True) for h in headers]]
+    for it in items:
+        data.append([
+            _para(str(it.no), size=9, align="CENTER"),
+            _para(it.name, size=9),
+            _para(_fmt_money(it.qty), size=9, align="RIGHT"),
+            _para(_fmt_money(it.unit_price), size=9, align="RIGHT"),
+            _para(_fmt_money(it.supply_amount + it.tax_amount), size=9, align="RIGHT"),
+        ])
+    data.append([
+        "",
+        _para("합  계", size=11, align="CENTER", bold=True),
+        "", "",
+        _para(f"₩{_fmt_money(total)}", size=12, align="RIGHT", bold=True),
+    ])
+    line_t = Table(data, colWidths=col_widths)
+    line_t.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), _FONT),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.black),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#fff7ed")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                (
+                    "ROWBACKGROUNDS",
+                    (0, 1),
+                    (-1, -2),
+                    [colors.white, colors.HexColor("#f8fafc")],
+                ),
+            ]
+        )
+    )
+    story.append(line_t)
+    story.append(Spacer(1, 6 * mm))
+
+    story.append(
+        _para(
+            f"위 금액을 영수합니다.    ( 일금 {_korean_amount(int(total))}원 정 )",
+            size=11,
+            align="CENTER",
+        )
+    )
+    story.append(Spacer(1, 4 * mm))
+    story.append(
+        _para(
+            "* 본 영수증은 일반 소비자 거래용 간이 영수증입니다.\n"
+            "  세금계산서가 필요하신 사업자 고객님은 별도 요청 바랍니다.",
+            size=8,
+            align="CENTER",
+        )
+    )
+    return _build(story)
+
+
 def render_acceptance_receipt_v2(
     company: PartyInfo,
     customer: PartyInfo,
