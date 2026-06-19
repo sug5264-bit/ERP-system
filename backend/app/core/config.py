@@ -19,6 +19,16 @@ class Settings(BaseSettings):
     # production unless the operator explicitly opts in.
     seed_demo_users: bool = True
 
+    # Public self-registration on POST /api/auth/register.
+    # default False — admin must create accounts via /api/auth/users.
+    # Set True only if you intentionally want anyone with the URL to sign up.
+    allow_public_registration: bool = False
+
+    # Demo business data (거래처/품목/계정과목/통화 등) — separate from demo users.
+    # seed.py 가 이 데이터를 시드할지 여부. 운영 DB에는 절대 False여야 함.
+    # default True (PoC/개발 편의).
+    seed_demo_data: bool = True
+
     # Google OAuth (optional)
     google_client_id: str | None = None
     google_client_secret: str | None = None
@@ -87,6 +97,16 @@ def validate_for_production(s: Settings) -> list[str]:
         issues.append("CORS_ORIGINS contains wildcard '*'. Pin exact origins.")
     if s.seed_demo_users:
         issues.append("SEED_DEMO_USERS=1 in production. Disable to skip well-known accounts.")
+    if s.allow_public_registration:
+        issues.append(
+            "ALLOW_PUBLIC_REGISTRATION=1 in production. Anyone with the URL "
+            "can sign up as a staff user — disable unless this is intentional."
+        )
+    if s.seed_demo_data:
+        issues.append(
+            "SEED_DEMO_DATA=1 in production. seed.py 가 가짜 거래처(세븐일레븐 등)/"
+            "품목(라들러 등)/계정과목까지 시드합니다. 운영 시작 전 false 로 두세요."
+        )
     return issues
 
 

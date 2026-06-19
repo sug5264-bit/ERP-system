@@ -52,6 +52,22 @@ def run() -> None:
                     )
             db.flush()
 
+        # 데모 비즈니스 데이터 (거래처/품목/계정과목) — production 보호용 분리 플래그.
+        if not settings.seed_demo_data:
+            print(
+                "seed_demo_data=false; skipping demo tenants/customers/items/accounts.\n"
+                "→ 운영 데이터는 /admin 메뉴에서 직접 등록하거나 Excel import 사용."
+            )
+            db.commit()
+            print("Seed completed (users only or skipped entirely).")
+            return
+
+        if settings.is_production:
+            raise RuntimeError(
+                "운영 환경에서 데모 비즈니스 데이터 시드를 거부합니다.\n"
+                "SEED_DEMO_DATA=false 설정 후 다시 실행하세요."
+            )
+
         # Tenants (multi-tenancy) ----------------------------------------------
         if not db.query(Tenant).first():
             t1 = Tenant(code="WG-KR", name="웰그린 코리아", description="국내 음료/주류 유통")

@@ -399,12 +399,34 @@ def receive_goods(
         )
 
     by_item = {l.item_id: l for l in po.items}
+
+    # Pre-flight: 과수령 검증 (전체 라인 잠금 + 검사 → 통과 후 일괄 적용)
+    # 한 라인이 과수령이면 전체 거부 — 부분 입고 방지.
     for line in payload.lines:
         po_line = by_item.get(line.item_id)
         if not po_line:
             raise HTTPException(
                 status_code=400, detail=f"item {line.item_id} not on this PO"
             )
+        if Decimal(line.quantity) <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"수령 수량은 0보다 커야 합니다 (item {line.item_id})",
+            )
+        new_received = Decimal(po_line.received_qty) + Decimal(line.quantity)
+        if new_received > Decimal(po_line.quantity):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"과수령: 품목 {line.item_id} 잔여 발주 수량 "
+                    f"{Decimal(po_line.quantity) - Decimal(po_line.received_qty)} 보다 큰 "
+                    f"{line.quantity} 입고 시도"
+                ),
+            )
+
+    # All-clear — 적용
+    for line in payload.lines:
+        po_line = by_item[line.item_id]
         po_line.received_qty = Decimal(po_line.received_qty) + Decimal(line.quantity)
         # Inbound stock movement (auto-appends to ledger)
         create_movement(

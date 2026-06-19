@@ -3,6 +3,7 @@ import AuthGate from "./AuthGate";
 import CurrencyPicker from "./CurrencyPicker";
 import NotificationsBell from "./NotificationsBell";
 import SearchBar from "./SearchBar";
+import SetupBanner from "./SetupBanner";
 import Sidebar from "./Sidebar";
 import TenantPicker from "./TenantPicker";
 import { useTheme } from "@/lib/theme";
@@ -14,6 +15,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <div className="flex">
         <Sidebar />
         <main className="flex-1 flex flex-col">
+          <SetupBanner />
           <header className="bg-white dark:bg-slate-900 border-b-2 border-brand-500/40 dark:border-slate-700 px-6 py-2 flex items-center gap-3 shadow-sm">
             <SearchBar />
             <div className="flex-1" />

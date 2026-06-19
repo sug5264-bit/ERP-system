@@ -983,6 +983,124 @@ def test_company_logo_rejects_bad_png_header(client, admin_auth):
     assert "PNG" in str(res.json())
 
 
+# ────── 9. 운영 보안: register 차단 / PO 과수령 / 데모데이터 분리 ──────
+
+
+def test_public_registration_blocked_by_default(client):
+    """ALLOW_PUBLIC_REGISTRATION=false (기본)일 때 /register 가 403."""
+    from app.core.config import settings
+    # conftest는 production 환경이 아니지만 allow_public_registration 기본 False.
+    assert settings.allow_public_registration is False
+    res = client.post(
+        "/api/auth/register",
+        json={
+            "email": "stranger@example.com",
+            "full_name": "외부인",
+            "password": "anything12345",
+        },
+    )
+    assert res.status_code == 403
+    body = res.json()
+    msg = body.get("error", {}).get("message") or body.get("detail", "")
+    assert "공개 회원가입" in msg or "비활성화" in msg
+
+
+def test_public_registration_allowed_when_flag_on(client, monkeypatch):
+    """플래그 켜면 정상 가입."""
+    from app.core import config as _cfg
+    monkeypatch.setattr(_cfg.settings, "allow_public_registration", True)
+    res = client.post(
+        "/api/auth/register",
+        json={
+            "email": "newbie@example.com",
+            "full_name": "신규",
+            "password": "stronglongpassword",
+        },
+    )
+    assert res.status_code == 200, res.text
+
+
+def test_po_receive_rejects_overage(client, db_session, admin_auth):
+    """PO 과수령 거부 — 같은 PO 두 번 호출 시 발주수량 초과 차단."""
+    from app.modules.inventory.models import Item
+    from app.modules.suppliers.models import (
+        POStatus, PurchaseOrder, PurchaseOrderItem, Supplier,
+    )
+
+    sup = Supplier(code="SUP-RCV", name="receive_test", is_active=True)
+    db_session.add(sup)
+    item = Item(sku="RCV-1", name="입고테스트", unit_price=Decimal("1000"))
+    db_session.add(item)
+    db_session.flush()
+    po = PurchaseOrder(
+        po_no="PO-RCV-1", supplier_id=sup.id, status=POStatus.sent,
+        total=Decimal("10000"),
+    )
+    po.items.append(
+        PurchaseOrderItem(
+            item_id=item.id, quantity=Decimal("10"),
+            unit_price=Decimal("1000"), received_qty=Decimal("0"),
+        )
+    )
+    db_session.add(po)
+    db_session.commit()
+
+    # 첫 입고: 7개 — 정상
+    res = client.post(
+        f"/api/suppliers/orders/{po.id}/receive",
+        json={"lines": [{"item_id": item.id, "quantity": 7}]},
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200, res.text
+
+    # 두번째 입고: 5개 시도 — 잔여 3개 초과 → 거부
+    res = client.post(
+        f"/api/suppliers/orders/{po.id}/receive",
+        json={"lines": [{"item_id": item.id, "quantity": 5}]},
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 400
+    body = res.json()
+    msg = body.get("error", {}).get("message") or body.get("detail", "")
+    assert "과수령" in msg or "잔여" in msg
+
+    # 잔여 3개는 정상 입고 가능
+    res = client.post(
+        f"/api/suppliers/orders/{po.id}/receive",
+        json={"lines": [{"item_id": item.id, "quantity": 3}]},
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 200
+
+
+def test_po_receive_rejects_zero_or_negative(client, db_session, admin_auth):
+    """0 이하 수령 수량 거부."""
+    from app.modules.inventory.models import Item
+    from app.modules.suppliers.models import (
+        POStatus, PurchaseOrder, PurchaseOrderItem, Supplier,
+    )
+
+    sup = Supplier(code="SUP-Z", name="z_test", is_active=True)
+    db_session.add(sup)
+    item = Item(sku="Z-1", name="제로", unit_price=Decimal("1000"))
+    db_session.add(item)
+    db_session.flush()
+    po = PurchaseOrder(po_no="PO-Z", supplier_id=sup.id, status=POStatus.sent)
+    po.items.append(PurchaseOrderItem(
+        item_id=item.id, quantity=Decimal("5"),
+        unit_price=Decimal("1000"), received_qty=Decimal("0"),
+    ))
+    db_session.add(po)
+    db_session.commit()
+
+    res = client.post(
+        f"/api/suppliers/orders/{po.id}/receive",
+        json={"lines": [{"item_id": item.id, "quantity": 0}]},
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 400
+
+
 def test_company_stamp_upload_rejects_non_image(client, admin_auth):
     client.put(
         "/api/company-profile",

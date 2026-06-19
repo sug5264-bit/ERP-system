@@ -44,6 +44,18 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 @router.post("/register", response_model=UserOut)
 def register(payload: UserCreate, db: Session = Depends(get_db)):
+    """공개 회원가입 — 기본 차단. ALLOW_PUBLIC_REGISTRATION=true 일 때만 허용.
+
+    운영 권장: admin이 /api/auth/users 로 직접 직원 계정 생성.
+    """
+    if not settings.allow_public_registration:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "공개 회원가입이 비활성화되어 있습니다. "
+                "관리자에게 계정 생성을 요청하세요."
+            ),
+        )
     if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
     user = User(
