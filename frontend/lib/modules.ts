@@ -38,6 +38,7 @@ export const MODULES: ModuleDef[] = [
 ];
 
 export const ADMIN_MODULES: ModuleDef[] = [
+  { key: "admin-company", labelKey: "nav.admin.company", href: "/admin/company", minRole: "admin" },
   { key: "admin-users", labelKey: "nav.admin.users", href: "/admin/users", minRole: "admin" },
   { key: "admin-audit", labelKey: "nav.admin.audit", href: "/admin/audit", minRole: "admin" },
   {

@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
 import Pager from "@/components/Pager";
-import { Page, api } from "@/lib/api";
+import { Page, api, downloadFile } from "@/lib/api";
 import { hasRole, useMe } from "@/lib/auth";
 
 type QuoteLine = {
@@ -315,6 +315,24 @@ function QuotesTab({
             render: (r) => Number(r.total).toLocaleString(),
           },
           {
+            key: "_pdf",
+            header: "양식",
+            sortable: false,
+            render: (r) => (
+              <button
+                onClick={() =>
+                  downloadFile(`/api/billing/quotes/${r.id}/quote.pdf`).catch(
+                    (e) => onError(String(e))
+                  )
+                }
+                className="text-emerald-700 text-xs hover:underline"
+                title="견적서 PDF"
+              >
+                견적서
+              </button>
+            ),
+          },
+          {
             key: "_act",
             header: "변환",
             sortable: false,
@@ -584,6 +602,24 @@ function InvoicesTab({
             key: "paid_amount",
             header: "수금액",
             render: (r) => Number(r.paid_amount).toLocaleString(),
+          },
+          {
+            key: "_pdf",
+            header: "양식",
+            sortable: false,
+            render: (r) => (
+              <button
+                onClick={() =>
+                  downloadFile(
+                    `/api/billing/invoices/${r.id}/tax-invoice.pdf`
+                  ).catch((e) => onError(String(e)))
+                }
+                className="text-emerald-700 text-xs hover:underline"
+                title="세금계산서 PDF"
+              >
+                세금계산서
+              </button>
+            ),
           },
           {
             key: "_act",

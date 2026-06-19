@@ -18,6 +18,8 @@ class POStatus(str, PyEnum):
 
 
 class Supplier(BaseEntity):
+    """공급처 (매입처). 발주서 출력에 사업자등록증 항목 모두 보유."""
+
     __tablename__ = "suppliers"
 
     code: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
@@ -25,6 +27,16 @@ class Supplier(BaseEntity):
     contact_email: Mapped[str | None] = mapped_column(String(255))
     phone: Mapped[str | None] = mapped_column(String(50))
     business_no: Mapped[str | None] = mapped_column(String(50))  # 사업자등록번호
+    # 사업자등록증 추가 항목
+    representative: Mapped[str | None] = mapped_column(String(100))  # 대표자
+    address: Mapped[str | None] = mapped_column(String(500))  # 사업장 주소
+    business_type: Mapped[str | None] = mapped_column(String(100))  # 업태
+    business_item: Mapped[str | None] = mapped_column(String(200))  # 종목
+    fax: Mapped[str | None] = mapped_column(String(50))
+    contact_person: Mapped[str | None] = mapped_column(String(100))  # 담당자
+    bank_name: Mapped[str | None] = mapped_column(String(100))
+    bank_account: Mapped[str | None] = mapped_column(String(100))
+
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     portal_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id"), index=True

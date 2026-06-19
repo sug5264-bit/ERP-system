@@ -220,6 +220,116 @@ def convert_quote_to_order(quote_id: int, db: Session = Depends(get_db)):
     return {"order_id": order.id, "order_no": order.order_no, "quote_id": q.id}
 
 
+# ---- Quote PDF -------------------------------------------------------------
+
+
+def _customer_to_party(cust: Customer):
+    from app.core.docs_pdf import PartyInfo
+
+    return PartyInfo(
+        business_no=cust.business_no,
+        company_name=cust.company or cust.name,
+        representative=cust.representative,
+        address=cust.address,
+        business_type=cust.business_type,
+        business_item=cust.business_item,
+        phone=cust.phone,
+        fax=cust.fax,
+    )
+
+
+def _company_party_or_400(db: Session, tenant_id: int | None = None):
+    from app.core.docs_pdf import PartyInfo
+    from app.modules.company.router import get_company_profile
+
+    cp = get_company_profile(db, tenant_id)
+    if not cp:
+        raise HTTPException(
+            status_code=400,
+            detail="회사정보가 등록되어 있지 않습니다. PUT /api/company-profile 로 등록하세요.",
+        )
+    party = PartyInfo(
+        business_no=cp.business_no,
+        company_name=cp.company_name,
+        representative=cp.representative,
+        address=cp.address,
+        business_type=cp.business_type,
+        business_item=cp.business_item,
+        phone=cp.phone,
+        fax=cp.fax,
+    )
+    return party, cp
+
+
+def _pdf_response(pdf_bytes: bytes, filename: str):
+    import io as _io
+
+    from fastapi.responses import StreamingResponse
+
+    from app.core.exports import _content_disposition
+
+    return StreamingResponse(
+        _io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": _content_disposition(filename, inline=True)},
+    )
+
+
+@router.get("/quotes/{quote_id}/quote.pdf")
+def quote_pdf(quote_id: int, db: Session = Depends(get_db)):
+    """견적서 PDF."""
+    from app.core.docs_pdf import LineItem, render_quote
+    from app.modules.inventory.models import Item
+
+    q = (
+        db.query(Quote)
+        .options(selectinload(Quote.items))
+        .filter(Quote.id == quote_id)
+        .first()
+    )
+    if not q:
+        raise HTTPException(status_code=404, detail="Quote not found")
+    cust = db.query(Customer).filter(Customer.id == q.customer_id).first()
+    if not cust:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    company, _ = _company_party_or_400(db)
+    customer = _customer_to_party(cust)
+
+    item_ids = [li.item_id for li in q.items]
+    items_by_id = {i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()}
+    vat = Decimal("0.10")
+    lines: list = []
+    for idx, li in enumerate(q.items, start=1):
+        prod = items_by_id.get(li.item_id)
+        if not prod:
+            continue
+        supply = (Decimal(li.quantity) * Decimal(li.unit_price)).quantize(Decimal("1"))
+        tax = (supply * vat).quantize(Decimal("1"))
+        lines.append(
+            LineItem(
+                no=idx,
+                name=prod.name,
+                spec=prod.sku,
+                qty=Decimal(li.quantity),
+                unit=prod.unit or "EA",
+                unit_price=Decimal(li.unit_price),
+                supply_amount=supply,
+                tax_amount=tax,
+            )
+        )
+
+    pdf = render_quote(
+        company,
+        customer,
+        lines,
+        doc_no=q.quote_no,
+        doc_date=q.issued_date,
+        expires_date=q.expires_date,
+        notes=q.notes,
+    )
+    return _pdf_response(pdf, f"견적서_{q.quote_no}.pdf")
+
+
 # ---- Invoices --------------------------------------------------------------
 
 
@@ -395,3 +505,169 @@ def record_payment(payload: PaymentIn, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(p)
     return p
+
+
+# ---- Tax Invoice / Customer Ledger PDFs -----------------------------------
+
+
+@router.get("/invoices/{invoice_id}/tax-invoice.pdf")
+def tax_invoice_pdf(invoice_id: int, db: Session = Depends(get_db)):
+    """세금계산서 PDF (국세청 양식 준용)."""
+    from app.core.docs_pdf import LineItem, render_tax_invoice
+    from app.modules.inventory.models import Item
+
+    inv = (
+        db.query(Invoice)
+        .options(selectinload(Invoice.items))
+        .filter(Invoice.id == invoice_id)
+        .first()
+    )
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    cust = db.query(Customer).filter(Customer.id == inv.customer_id).first()
+    if not cust:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    company, cp = _company_party_or_400(db)
+    customer = _customer_to_party(cust)
+
+    # 세금계산서는 invoice subtotal/tax를 사용. 라인별 분배.
+    total_supply = Decimal(inv.subtotal)
+    total_tax = Decimal(inv.tax)
+    lines: list = []
+    item_ids = [li.item_id for li in inv.items if li.item_id]
+    items_by_id = (
+        {i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()}
+        if item_ids
+        else {}
+    )
+    for idx, li in enumerate(inv.items, start=1):
+        prod = items_by_id.get(li.item_id) if li.item_id else None
+        supply = Decimal(li.line_total)
+        tax_line = (
+            (supply / total_supply * total_tax).quantize(Decimal("1"))
+            if total_supply > 0
+            else Decimal(0)
+        )
+        lines.append(
+            LineItem(
+                no=idx,
+                name=li.description,
+                spec=(prod.sku if prod else None),
+                qty=Decimal(li.quantity),
+                unit=(prod.unit if prod else "EA"),
+                unit_price=Decimal(li.unit_price),
+                supply_amount=supply,
+                tax_amount=tax_line,
+            )
+        )
+
+    bank_info = None
+    if cp.bank_name and cp.bank_account:
+        bank_info = f"{cp.bank_name} {cp.bank_account}" + (
+            f" (예금주: {cp.bank_holder})" if cp.bank_holder else ""
+        )
+    pdf = render_tax_invoice(
+        company,
+        customer,
+        lines,
+        doc_no=inv.invoice_no,
+        doc_date=inv.issued_date,
+        is_exempt=(total_tax == 0),
+        bank_info=bank_info,
+    )
+    return _pdf_response(pdf, f"세금계산서_{inv.invoice_no}.pdf")
+
+
+@router.get("/customers/{customer_id}/ledger.pdf")
+def customer_ledger_pdf(
+    customer_id: int,
+    period_from: date,
+    period_to: date,
+    db: Session = Depends(get_db),
+):
+    """거래원장 PDF — 거래처 기준 매출/입금/잔액 시계열."""
+    from app.core.docs_pdf import LedgerRow, render_customer_ledger
+
+    cust = db.query(Customer).filter(Customer.id == customer_id).first()
+    if not cust:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    company, _ = _company_party_or_400(db)
+    customer = _customer_to_party(cust)
+
+    # 기초잔액 = 기간 시작 이전 (매출 - 입금)
+    opening_q = (
+        db.query(Invoice)
+        .filter(
+            Invoice.customer_id == customer_id,
+            Invoice.issued_date < period_from,
+            Invoice.status != InvoiceStatus.cancelled,
+        )
+        .all()
+    )
+    opening_debit = sum((Decimal(i.total) for i in opening_q), Decimal(0))
+    opening_pay_q = (
+        db.query(Payment)
+        .join(Invoice, Invoice.id == Payment.invoice_id)
+        .filter(
+            Invoice.customer_id == customer_id,
+            Payment.paid_at < period_from,
+        )
+        .all()
+    )
+    opening_credit = sum((Decimal(p.amount) for p in opening_pay_q), Decimal(0))
+    opening_balance = opening_debit - opening_credit
+
+    # 기간 내 거래
+    period_invs = (
+        db.query(Invoice)
+        .filter(
+            Invoice.customer_id == customer_id,
+            Invoice.issued_date >= period_from,
+            Invoice.issued_date <= period_to,
+            Invoice.status != InvoiceStatus.cancelled,
+        )
+        .all()
+    )
+    period_pays = (
+        db.query(Payment)
+        .join(Invoice, Invoice.id == Payment.invoice_id)
+        .filter(
+            Invoice.customer_id == customer_id,
+            Payment.paid_at >= period_from,
+            Payment.paid_at <= period_to,
+        )
+        .all()
+    )
+
+    events: list[tuple[date, str, Decimal, Decimal]] = []
+    for i in period_invs:
+        events.append((i.issued_date, f"{i.invoice_no} 매출", Decimal(i.total), Decimal(0)))
+    for p in period_pays:
+        events.append(
+            (p.paid_at, f"입금 ({p.method})", Decimal(0), Decimal(p.amount))
+        )
+    events.sort(key=lambda e: e[0])
+
+    rows: list[LedgerRow] = []
+    running = Decimal(opening_balance)
+    for ev_date, desc, debit, credit in events:
+        running = running + debit - credit
+        rows.append(
+            LedgerRow(
+                txn_date=ev_date,
+                description=desc,
+                debit=debit,
+                credit=credit,
+                balance=running,
+            )
+        )
+
+    pdf = render_customer_ledger(
+        company,
+        customer,
+        rows,
+        period_from=period_from,
+        period_to=period_to,
+        opening_balance=opening_balance,
+    )
+    return _pdf_response(pdf, f"거래원장_{cust.name}_{period_from}_{period_to}.pdf")

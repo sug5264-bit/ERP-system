@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
 import Pager from "@/components/Pager";
-import { Page, api } from "@/lib/api";
+import { Page, api, downloadFile } from "@/lib/api";
 import { hasRole, useMe } from "@/lib/auth";
 
 type PickList = {
@@ -326,6 +326,37 @@ function ShipTab({
           { key: "tracking_no", header: "추적번호" },
           { key: "shipped_at", header: "출하시각" },
           { key: "delivered_at", header: "배송시각" },
+          {
+            key: "_docs",
+            header: "양식",
+            sortable: false,
+            render: (r) => (
+              <div className="flex gap-2 text-xs">
+                <button
+                  onClick={() =>
+                    downloadFile(
+                      `/api/wms/shipments/${r.id}/transaction-statement.pdf`
+                    ).catch((e) => onError(String(e)))
+                  }
+                  className="text-emerald-700 hover:underline"
+                  title="거래명세표 PDF"
+                >
+                  거래명세표
+                </button>
+                <button
+                  onClick={() =>
+                    downloadFile(
+                      `/api/wms/shipments/${r.id}/acceptance-receipt.pdf`
+                    ).catch((e) => onError(String(e)))
+                  }
+                  className="text-emerald-700 hover:underline"
+                  title="인수증 PDF"
+                >
+                  인수증
+                </button>
+              </div>
+            ),
+          },
           {
             key: "_act",
             header: "관리",

@@ -28,7 +28,16 @@ export default function SalesPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [error, setError] = useState("");
 
-  const [custForm, setCustForm] = useState({ name: "", email: "", company: "" });
+  const [custForm, setCustForm] = useState({
+    name: "",
+    email: "",
+    company: "",
+    business_no: "",
+    representative: "",
+    address: "",
+    phone: "",
+  });
+  const [showCustExtra, setShowCustExtra] = useState(false);
 
   const [orderNo, setOrderNo] = useState("");
   const [customerId, setCustomerId] = useState("");
@@ -66,9 +75,21 @@ export default function SalesPage() {
           name: custForm.name,
           email: custForm.email || null,
           company: custForm.company || null,
+          business_no: custForm.business_no || null,
+          representative: custForm.representative || null,
+          address: custForm.address || null,
+          phone: custForm.phone || null,
         }),
       });
-      setCustForm({ name: "", email: "", company: "" });
+      setCustForm({
+        name: "",
+        email: "",
+        company: "",
+        business_no: "",
+        representative: "",
+        address: "",
+        phone: "",
+      });
       await load();
     } catch (e) {
       setError(String(e));
@@ -158,12 +179,53 @@ export default function SalesPage() {
           className="border rounded px-2 py-1"
         />
         <input
-          placeholder="회사"
+          placeholder="회사 / 상호"
           value={custForm.company}
           onChange={(e) => setCustForm({ ...custForm, company: e.target.value })}
           className="border rounded px-2 py-1"
         />
         <button className="bg-slate-900 text-white px-3 rounded">추가</button>
+        <button
+          type="button"
+          onClick={() => setShowCustExtra(!showCustExtra)}
+          className="col-span-1 md:col-span-4 text-xs text-emerald-700 hover:underline text-left"
+        >
+          {showCustExtra ? "▼" : "▶"} 세금계산서/거래명세표용 추가 정보
+        </button>
+        {showCustExtra && (
+          <>
+            <input
+              placeholder="사업자등록번호 (123-45-67890)"
+              value={custForm.business_no}
+              onChange={(e) =>
+                setCustForm({ ...custForm, business_no: e.target.value })
+              }
+              className="border rounded px-2 py-1"
+            />
+            <input
+              placeholder="대표자"
+              value={custForm.representative}
+              onChange={(e) =>
+                setCustForm({ ...custForm, representative: e.target.value })
+              }
+              className="border rounded px-2 py-1"
+            />
+            <input
+              placeholder="사업장 주소"
+              value={custForm.address}
+              onChange={(e) =>
+                setCustForm({ ...custForm, address: e.target.value })
+              }
+              className="border rounded px-2 py-1 md:col-span-2"
+            />
+            <input
+              placeholder="전화"
+              value={custForm.phone}
+              onChange={(e) => setCustForm({ ...custForm, phone: e.target.value })}
+              className="border rounded px-2 py-1"
+            />
+          </>
+        )}
       </form>
 
       <h2 className="text-lg font-medium mb-2">주문 생성</h2>

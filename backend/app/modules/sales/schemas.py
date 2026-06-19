@@ -11,6 +11,15 @@ class CustomerBase(BaseModel):
     email: EmailStr | None = None
     phone: str | None = None
     company: str | None = None
+    business_no: str | None = None
+    representative: str | None = None
+    address: str | None = None
+    business_type: str | None = None
+    business_item: str | None = None
+    fax: str | None = None
+    contact_person: str | None = None
+    bank_name: str | None = None
+    bank_account: str | None = None
 
 
 class CustomerCreate(CustomerBase):
@@ -22,6 +31,15 @@ class CustomerUpdate(BaseModel):
     email: EmailStr | None = None
     phone: str | None = None
     company: str | None = None
+    business_no: str | None = None
+    representative: str | None = None
+    address: str | None = None
+    business_type: str | None = None
+    business_item: str | None = None
+    fax: str | None = None
+    contact_person: str | None = None
+    bank_name: str | None = None
+    bank_account: str | None = None
 
 
 class CustomerOut(CustomerBase):

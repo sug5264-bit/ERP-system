@@ -12,6 +12,7 @@ os.environ.setdefault("AUTO_CREATE_TABLES", "true")
 os.environ.setdefault("SCHEDULER_ENABLED", "false")
 os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 os.environ.setdefault("JWT_SECRET", "test-secret-with-enough-length-for-prod-check-xx")
+os.environ.setdefault("METRICS_ENABLED", "false")
 
 import pytest
 from fastapi.testclient import TestClient

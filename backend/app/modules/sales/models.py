@@ -15,12 +15,26 @@ class OrderStatus(str, PyEnum):
 
 
 class Customer(BaseEntity):
+    """거래처 (매출처). 한국식 세금계산서/거래명세표 발행에 필요한
+    사업자등록증 항목을 모두 보유."""
+
     __tablename__ = "sales_customers"
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     email: Mapped[str | None] = mapped_column(String(255))
     phone: Mapped[str | None] = mapped_column(String(50))
     company: Mapped[str | None] = mapped_column(String(200))
+    # 사업자등록증 항목 (세금계산서/거래명세표 필수)
+    business_no: Mapped[str | None] = mapped_column(String(20), index=True)
+    representative: Mapped[str | None] = mapped_column(String(100))
+    address: Mapped[str | None] = mapped_column(String(500))
+    business_type: Mapped[str | None] = mapped_column(String(100))  # 업태
+    business_item: Mapped[str | None] = mapped_column(String(200))  # 종목
+    fax: Mapped[str | None] = mapped_column(String(50))
+    contact_person: Mapped[str | None] = mapped_column(String(100))  # 담당자
+    bank_name: Mapped[str | None] = mapped_column(String(100))
+    bank_account: Mapped[str | None] = mapped_column(String(100))
+
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
     tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), index=True)
 

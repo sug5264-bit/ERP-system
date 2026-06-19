@@ -4,7 +4,7 @@ import AppShell from "@/components/AppShell";
 import DataTable from "@/components/DataTable";
 import EditDeleteActions from "@/components/EditDeleteActions";
 import Pager from "@/components/Pager";
-import { Page, api } from "@/lib/api";
+import { Page, api, downloadFile } from "@/lib/api";
 
 type Supplier = {
   id: number;
@@ -44,7 +44,16 @@ export default function SuppliersPage() {
   const [items, setItems] = useState<Item[]>([]);
   const [error, setError] = useState("");
 
-  const [supForm, setSupForm] = useState({ code: "", name: "", contact_email: "" });
+  const [supForm, setSupForm] = useState({
+    code: "",
+    name: "",
+    contact_email: "",
+    business_no: "",
+    representative: "",
+    address: "",
+    phone: "",
+  });
+  const [showSupExtra, setShowSupExtra] = useState(false);
   const [portalForm, setPortalForm] = useState({
     code: "",
     name: "",
@@ -90,7 +99,15 @@ export default function SuppliersPage() {
         method: "POST",
         body: JSON.stringify(supForm),
       });
-      setSupForm({ code: "", name: "", contact_email: "" });
+      setSupForm({
+        code: "",
+        name: "",
+        contact_email: "",
+        business_no: "",
+        representative: "",
+        address: "",
+        phone: "",
+      });
       await load();
     } catch (e) {
       setError(String(e));
@@ -230,6 +247,49 @@ export default function SuppliersPage() {
               className="border rounded px-2 py-1"
             />
             <button className="bg-slate-900 text-white px-3 rounded">공급사 추가</button>
+            <button
+              type="button"
+              onClick={() => setShowSupExtra(!showSupExtra)}
+              className="col-span-1 md:col-span-4 text-xs text-emerald-700 hover:underline text-left"
+            >
+              {showSupExtra ? "▼" : "▶"} 발주서/세금계산서용 추가 정보
+            </button>
+            {showSupExtra && (
+              <>
+                <input
+                  placeholder="사업자등록번호 (123-45-67890)"
+                  value={supForm.business_no}
+                  onChange={(e) =>
+                    setSupForm({ ...supForm, business_no: e.target.value })
+                  }
+                  className="border rounded px-2 py-1"
+                />
+                <input
+                  placeholder="대표자"
+                  value={supForm.representative}
+                  onChange={(e) =>
+                    setSupForm({ ...supForm, representative: e.target.value })
+                  }
+                  className="border rounded px-2 py-1"
+                />
+                <input
+                  placeholder="전화"
+                  value={supForm.phone}
+                  onChange={(e) =>
+                    setSupForm({ ...supForm, phone: e.target.value })
+                  }
+                  className="border rounded px-2 py-1"
+                />
+                <input
+                  placeholder="사업장 주소"
+                  value={supForm.address}
+                  onChange={(e) =>
+                    setSupForm({ ...supForm, address: e.target.value })
+                  }
+                  className="border rounded px-2 py-1 md:col-span-4"
+                />
+              </>
+            )}
           </form>
 
           <form
@@ -483,6 +543,17 @@ export default function SuppliersPage() {
                 header: "",
                 render: (r) => (
                   <div className="flex gap-1 flex-wrap">
+                    <button
+                      onClick={() =>
+                        downloadFile(
+                          `/api/suppliers/orders/${r.id}/purchase-order.pdf`
+                        ).catch((e) => setError(String(e)))
+                      }
+                      className="px-2 py-1 bg-emerald-700 text-white rounded text-xs"
+                      title="발주서 PDF"
+                    >
+                      발주서
+                    </button>
                     {r.status === "draft" && (
                       <button
                         onClick={() => action(r.id, "send")}

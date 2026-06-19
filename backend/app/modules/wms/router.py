@@ -327,6 +327,168 @@ def mark_delivered(ship_id: int, db: Session = Depends(get_db)):
     return s
 
 
+# ---- Document PDFs (거래명세표 / 인수증) ------------------------------------
+
+
+def _shipment_to_line_items(
+    db: Session, shipment: Shipment, *, vat_rate: Decimal = Decimal("0.10")
+):
+    """Pick list 라인 → docs_pdf LineItem 변환.
+
+    수량은 picked_qty 우선, 0이면 requested_qty.
+    부가세는 라인별 10% (면세품은 호출자가 vat_rate=0으로 호출).
+    """
+    from app.core.docs_pdf import LineItem
+    from app.modules.inventory.models import Item
+
+    pl = (
+        db.query(PickList)
+        .options(selectinload(PickList.items))
+        .filter(PickList.id == shipment.pick_list_id)
+        .first()
+    )
+    if not pl:
+        return []
+    item_ids = [li.item_id for li in pl.items]
+    items_by_id = {
+        i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()
+    }
+    lines: list[LineItem] = []
+    for idx, li in enumerate(pl.items, start=1):
+        qty = Decimal(li.picked_qty) if Decimal(li.picked_qty) > 0 else Decimal(li.requested_qty)
+        prod = items_by_id.get(li.item_id)
+        if not prod:
+            continue
+        unit_price = Decimal(prod.unit_price or 0)
+        supply = (qty * unit_price).quantize(Decimal("1"))
+        tax = (supply * vat_rate).quantize(Decimal("1"))
+        lines.append(
+            LineItem(
+                no=idx,
+                name=prod.name,
+                spec=prod.sku,
+                qty=qty,
+                unit=prod.unit or "EA",
+                unit_price=unit_price,
+                supply_amount=supply,
+                tax_amount=tax,
+            )
+        )
+    return lines
+
+
+def _resolve_company_and_customer(db: Session, shipment: Shipment):
+    """공급자(자사)와 공급받는자(거래처) PartyInfo 구성."""
+    from app.core.docs_pdf import PartyInfo
+    from app.modules.company.router import get_company_profile
+    from app.modules.sales.models import Customer
+
+    so = (
+        db.query(SalesOrder)
+        .filter(SalesOrder.id == shipment.sales_order_id)
+        .first()
+    )
+    cust = (
+        db.query(Customer).filter(Customer.id == so.customer_id).first() if so else None
+    )
+    tenant_id = so.tenant_id if so else None
+    cp = get_company_profile(db, tenant_id)
+    if not cp:
+        raise HTTPException(
+            status_code=400,
+            detail="회사정보(CompanyProfile)가 등록되어 있지 않습니다. PUT /api/company-profile 로 먼저 등록하세요.",
+        )
+    company = PartyInfo(
+        business_no=cp.business_no,
+        company_name=cp.company_name,
+        representative=cp.representative,
+        address=cp.address,
+        business_type=cp.business_type,
+        business_item=cp.business_item,
+        phone=cp.phone,
+        fax=cp.fax,
+    )
+    if not cust:
+        raise HTTPException(status_code=404, detail="거래처 정보를 찾을 수 없습니다.")
+    customer = PartyInfo(
+        business_no=cust.business_no,
+        company_name=cust.company or cust.name,
+        representative=cust.representative,
+        address=cust.address,
+        business_type=cust.business_type,
+        business_item=cust.business_item,
+        phone=cust.phone,
+        fax=cust.fax,
+    )
+    return company, customer, cp
+
+
+def _pdf_response(pdf_bytes: bytes, filename: str):
+    import io as _io
+
+    from fastapi.responses import StreamingResponse
+
+    from app.core.exports import _content_disposition
+
+    return StreamingResponse(
+        _io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": _content_disposition(filename, inline=True)},
+    )
+
+
+@router.get("/shipments/{ship_id}/transaction-statement.pdf")
+def shipment_transaction_statement_pdf(
+    ship_id: int, db: Session = Depends(get_db)
+):
+    """거래명세표 PDF — 출고건 기준."""
+    from app.core.docs_pdf import render_transaction_statement
+
+    s = db.query(Shipment).filter(Shipment.id == ship_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+    company, customer, cp = _resolve_company_and_customer(db, s)
+    lines = _shipment_to_line_items(db, s)
+    bank_info = None
+    if cp.bank_name and cp.bank_account:
+        bank_info = f"{cp.bank_name} {cp.bank_account}" + (
+            f" (예금주: {cp.bank_holder})" if cp.bank_holder else ""
+        )
+    pdf = render_transaction_statement(
+        company,
+        customer,
+        lines,
+        doc_no=s.shipment_no,
+        doc_date=(s.shipped_at or s.packed_at or datetime.utcnow()).date(),
+        bank_info=bank_info,
+        remarks=s.notes,
+    )
+    return _pdf_response(pdf, f"거래명세표_{s.shipment_no}.pdf")
+
+
+@router.get("/shipments/{ship_id}/acceptance-receipt.pdf")
+def shipment_acceptance_receipt_pdf(
+    ship_id: int, db: Session = Depends(get_db)
+):
+    """인수증 PDF — 출고건 기준."""
+    from app.core.docs_pdf import render_acceptance_receipt
+
+    s = db.query(Shipment).filter(Shipment.id == ship_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+    company, customer, _ = _resolve_company_and_customer(db, s)
+    lines = _shipment_to_line_items(db, s)
+    pdf = render_acceptance_receipt(
+        company,
+        customer,
+        lines,
+        doc_no=s.shipment_no,
+        doc_date=(s.delivered_at or s.shipped_at or s.packed_at or datetime.utcnow()).date(),
+        delivery_address=s.address_to,
+    )
+    return _pdf_response(pdf, f"인수증_{s.shipment_no}.pdf")
+
+
 @router.post(
     "/shipments/{ship_id}/return",
     response_model=ShipmentOut,

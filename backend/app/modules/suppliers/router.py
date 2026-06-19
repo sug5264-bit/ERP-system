@@ -212,6 +212,110 @@ def _transition(
     return po
 
 
+@router.get("/orders/{order_id}/purchase-order.pdf")
+def purchase_order_pdf(
+    order_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """발주서 PDF — PO 기준."""
+    import io as _io
+    from datetime import datetime as _dt
+    from decimal import Decimal as _D
+
+    from fastapi.responses import StreamingResponse
+
+    from app.core.docs_pdf import (
+        LineItem,
+        PartyInfo,
+        render_purchase_order,
+    )
+    from app.core.exports import _content_disposition
+    from app.modules.company.router import get_company_profile
+    from app.modules.tenants.router import get_current_tenant_id
+
+    po = (
+        _scoped_orders(db, user)
+        .options(selectinload(PurchaseOrder.items), selectinload(PurchaseOrder.supplier))
+        .filter(PurchaseOrder.id == order_id)
+        .first()
+    )
+    if not po:
+        raise HTTPException(status_code=404, detail="PO not found")
+
+    cp = get_company_profile(db, None)
+    if not cp:
+        raise HTTPException(
+            status_code=400,
+            detail="회사정보가 등록되어 있지 않습니다. PUT /api/company-profile 로 등록하세요.",
+        )
+    company = PartyInfo(
+        business_no=cp.business_no,
+        company_name=cp.company_name,
+        representative=cp.representative,
+        address=cp.address,
+        business_type=cp.business_type,
+        business_item=cp.business_item,
+        phone=cp.phone,
+        fax=cp.fax,
+    )
+    sup = po.supplier
+    supplier_party = PartyInfo(
+        business_no=sup.business_no,
+        company_name=sup.name,
+        representative=sup.representative,
+        address=sup.address,
+        business_type=sup.business_type,
+        business_item=sup.business_item,
+        phone=sup.phone,
+        fax=sup.fax,
+    )
+
+    item_ids = [li.item_id for li in po.items]
+    items_by_id = {
+        i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()
+    }
+    vat = _D("0.10")
+    lines: list[LineItem] = []
+    for idx, li in enumerate(po.items, start=1):
+        prod = items_by_id.get(li.item_id)
+        if not prod:
+            continue
+        supply = (_D(li.quantity) * _D(li.unit_price)).quantize(_D("1"))
+        tax = (supply * vat).quantize(_D("1"))
+        lines.append(
+            LineItem(
+                no=idx,
+                name=prod.name,
+                spec=prod.sku,
+                qty=_D(li.quantity),
+                unit=prod.unit or "EA",
+                unit_price=_D(li.unit_price),
+                supply_amount=supply,
+                tax_amount=tax,
+            )
+        )
+
+    pdf_bytes = render_purchase_order(
+        company,
+        supplier_party,
+        lines,
+        doc_no=po.po_no,
+        doc_date=po.order_date,
+        expected_date=po.expected_date,
+        remarks=po.notes,
+    )
+    return StreamingResponse(
+        _io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": _content_disposition(
+                f"발주서_{po.po_no}.pdf", inline=True
+            )
+        },
+    )
+
+
 @router.post("/orders/{order_id}/send", response_model=POOut)
 def send_to_supplier(
     order_id: int,
