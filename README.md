@@ -177,14 +177,29 @@ python scripts/seed.py            # 자동 create_all + 초기 데이터
 uvicorn app.main:app --reload
 ```
 
-**Backend (Postgres + Alembic, 운영 권장)**
+**Backend (Postgres, 운영 신규 구축 권장 절차)**
+
+신규 빈 DB라면 마이그레이션 체인이 일부 모듈(CRM/HR 등) 모델만 가지고 있어
+`alembic upgrade head`가 중간에 멈출 수 있습니다. 운영 시작 시 1회만:
+
 ```bash
 cd backend
-export DATABASE_URL=postgresql+psycopg2://erp:erp@localhost:5432/erp
+export DATABASE_URL=postgresql+psycopg2://erp:erp@db:5432/erp
+
+# 1) 모델 기준으로 모든 테이블 생성 (스키마 1회 부트스트랩)
+export AUTO_CREATE_TABLES=1
+python -c "from app.core.db import Base, engine; \
+           import app.main; Base.metadata.create_all(engine)"
+
+# 2) Alembic을 head 위치에 마킹 — 이미 최신 스키마이므로 적용 X
+alembic stamp head
+
+# 3) 운영 모드로 전환 — 이후 부트 시 더 이상 자동 생성 안 함
 export AUTO_CREATE_TABLES=0
-alembic upgrade head               # 마이그레이션 적용
-python scripts/seed.py             # 초기 데이터
-uvicorn app.main:app --reload
+export SEED_DEMO_USERS=0
+export SEED_DEMO_DATA=0
+export JWT_SECRET=$(openssl rand -hex 32)
+uvicorn app.main:app --workers 4
 ```
 
 **스키마 변경 시 새 마이그레이션 생성**

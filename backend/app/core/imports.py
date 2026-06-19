@@ -15,12 +15,27 @@ from fastapi import HTTPException, UploadFile
 async def parse_upload(
     file: UploadFile,
     alias: dict[str, str],
+    *,
+    max_bytes: int | None = None,
 ) -> Iterator[dict]:
     """xlsx 또는 csv 파일에서 행을 dict로 yield.
 
     alias: 원본 헤더(소문자 strip) → 표준 키. 매칭 안되면 컬럼 무시.
+    max_bytes: None이면 settings.upload_max_bytes(기본 10MB) 적용. 초과 시 413.
     """
+    if max_bytes is None:
+        try:
+            from app.core.config import settings
+            max_bytes = getattr(settings, "upload_max_bytes", 10 * 1024 * 1024)
+        except Exception:
+            max_bytes = 10 * 1024 * 1024
+
     raw = await file.read()
+    if len(raw) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"파일이 너무 큽니다 ({len(raw):,} bytes > 상한 {max_bytes:,} bytes).",
+        )
     filename = (file.filename or "").lower()
 
     rows: list[dict] = []

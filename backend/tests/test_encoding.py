@@ -12,9 +12,11 @@ from decimal import Decimal
 
 
 def test_pdf_renders_korean_text():
+    import pytest
     from io import BytesIO
 
-    from pypdf import PdfReader
+    pypdf = pytest.importorskip("pypdf", reason="pypdf는 선택적 dev 의존성")
+    PdfReader = pypdf.PdfReader
 
     from app.core.exports import render_pdf_bytes
 

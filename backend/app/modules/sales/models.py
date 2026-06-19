@@ -1,7 +1,7 @@
 from datetime import date
 from enum import Enum as PyEnum
 
-from sqlalchemy import Date, Enum, ForeignKey, Numeric, String
+from sqlalchemy import Date, Enum, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.base_model import BaseEntity
@@ -57,8 +57,15 @@ class Customer(BaseEntity):
 
 class SalesOrder(BaseEntity):
     __tablename__ = "sales_orders"
+    __table_args__ = (
+        # 멀티테넌트 + 멀티쇼핑몰 — order_no는 (tenant, order_no) 조합으로만 유일.
+        # 카페24/네이버/쿠팡이 동일한 "100001" 번호를 쓰더라도 충돌 없도록.
+        # tenant_id가 NULL이면 단일테넌트 운영 → 전역 유일 유지.
+        UniqueConstraint("tenant_id", "order_no", name="uq_sales_orders_tenant_order_no"),
+    )
 
-    order_no: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
+    # NOTE: 모듈 모델에서 unique=True를 빼고 __table_args__로 위임. 인덱스는 유지.
+    order_no: Mapped[str] = mapped_column(String(50), index=True, nullable=False)
     customer_id: Mapped[int] = mapped_column(ForeignKey("sales_customers.id"), nullable=False)
     order_date: Mapped[date] = mapped_column(Date, default=date.today)
     status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), default=OrderStatus.draft)

@@ -19,6 +19,7 @@ from app.modules.inventory.models import MovementType
 from app.modules.inventory.schemas import StockMovementCreate
 from app.modules.inventory.service import create_movement
 from app.modules.sales.models import OrderStatus, SalesOrder
+from app.modules.tenants.router import get_current_tenant_id
 from app.modules.wms.models import (
     PickList,
     PickListItem,
@@ -784,6 +785,7 @@ async def import_shipment_tracking(
         True, description="True면 일괄 등록과 동시에 'shipped' 전이"
     ),
     db: Session = Depends(get_db),
+    tenant_id: int | None = Depends(get_current_tenant_id),
 ):
     """택배사/운송장번호를 Excel/CSV로 일괄 등록.
 
@@ -805,18 +807,32 @@ async def import_shipment_tracking(
     }
     rows = await parse_upload(file, alias)
 
+    import logging as _logging
     from decimal import Decimal as _D, InvalidOperation
+    _log = _logging.getLogger("erp.wms.import")
     updated = 0
     shipped = 0
     skipped = 0
     errors: list[dict] = []
+
+    # 사전 일괄 조회 (N+1 제거). 멀티테넌트 격리는 SO 체인으로 간접 보장.
+    # (Shipment 자체에는 tenant_id 컬럼이 없음 — SO.tenant_id로 거슬러 검증)
+    all_nos = {str(r.get("shipment_no") or "").strip() for r in rows}
+    all_nos.discard("")
+    s_q = db.query(Shipment).filter(Shipment.shipment_no.in_(all_nos))
+    if tenant_id is not None:
+        s_q = (
+            s_q.join(SalesOrder, SalesOrder.id == Shipment.sales_order_id)
+            .filter(SalesOrder.tenant_id == tenant_id)
+        )
+    s_index: dict[str, Shipment] = {s.shipment_no: s for s in s_q.all()}
 
     for idx, r in enumerate(rows, start=2):
         shp_no = str(r.get("shipment_no") or "").strip()
         if not shp_no:
             errors.append({"row": idx, "reason": "송장번호 비어있음"})
             continue
-        s = db.query(Shipment).filter(Shipment.shipment_no == shp_no).first()
+        s = s_index.get(shp_no)
         if not s:
             errors.append({"row": idx, "reason": f"매칭되는 출고 없음: {shp_no}"})
             continue
@@ -847,6 +863,7 @@ async def import_shipment_tracking(
         db.commit()
     except Exception as exc:
         db.rollback()
+        _log.exception("송장 일괄등록 commit 실패")
         raise HTTPException(status_code=400, detail=f"저장 실패: {exc}")
 
     return {

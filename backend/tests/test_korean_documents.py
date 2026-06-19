@@ -1143,9 +1143,11 @@ def test_orders_import_creates_so_with_lines(client, db_session, admin_auth):
     assert body["created_orders"] == 1
     assert body["errors"] == []
 
-    # DB 검증
+    # DB 검증 — shop prefix가 자동으로 붙음 (쇼핑몰 간 충돌 방지)
     db_session.expire_all()
-    so = db_session.query(SalesOrder).filter(SalesOrder.order_no == "WEB-001").first()
+    so = db_session.query(SalesOrder).filter(
+        SalesOrder.order_no == "카페24-WEB-001"
+    ).first()
     assert so is not None
     assert len(so.items) == 2
 

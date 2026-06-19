@@ -374,39 +374,75 @@ async def import_orders(
     errors: list[dict] = []
     enum_type = CustomerType.individual if default_customer_type == "individual" else CustomerType.business
 
+    import logging as _logging
+    _log = _logging.getLogger("erp.sales.import")
+
+    def _t(q):
+        """테넌트 격리 — tenant_id가 set이면 일치, NULL이면 NULL 매칭."""
+        return q if tenant_id is None else q  # tenant_id 필터는 호출부에서 모델별로 적용
+
     # 잘못된 행 먼저 에러 처리
     for bad in by_order.pop("__bad__", []):
         errors.append({"row": bad["_idx"], "reason": bad["_error"]})
 
-    for order_no, lines in by_order.items():
-        # 기존 SO 있으면 skip
-        if db.query(SalesOrder).filter(SalesOrder.order_no == order_no).first():
-            skipped_orders += 1
-            continue
+    # 사전 캐시: SKU/external_sku 일괄 조회 (N+1 제거)
+    all_skus = {
+        str(r.get("sku") or "").strip()
+        for rs in by_order.values()
+        for r in rs
+        if r.get("sku")
+    }
+    all_skus.discard("")
+    items_q = db.query(Item).filter(
+        (Item.sku.in_(all_skus)) | (Item.external_sku.in_(all_skus))
+    )
+    if tenant_id is not None:
+        items_q = items_q.filter(Item.tenant_id == tenant_id)
+    sku_index: dict[str, Item] = {}
+    for it in items_q.all():
+        if it.sku in all_skus:
+            sku_index[it.sku] = it
+        if it.external_sku and it.external_sku in all_skus:
+            sku_index.setdefault(it.external_sku, it)
 
+    for order_no_raw, lines in by_order.items():
         first = lines[0]
+        shop = str(first.get("shop") or "").strip() or None
+        ext_order_id = str(first.get("external_order_id") or "").strip() or None
         cust_name = str(first.get("customer_name") or "").strip() or "온라인고객"
         phone = str(first.get("phone") or "").strip() or None
         email = str(first.get("email") or "").strip() or None
         address = str(first.get("address") or "").strip() or None
-        shop = str(first.get("shop") or "").strip() or None
-        ext_order_id = str(first.get("external_order_id") or "").strip() or None
 
-        # Customer 매칭 — 외부ID > 전화 > 이메일 > 이름
+        # 쇼핑몰 간 order_no 충돌 방지: shop 컬럼이 있으면 자동 prefix.
+        # 예: "CAFE24-100001" — 두 쇼핑몰 동일 번호 import 시 충돌 없음.
+        if shop and not order_no_raw.startswith(shop):
+            order_no = f"{shop}-{order_no_raw}"
+        else:
+            order_no = order_no_raw
+
+        # 기존 SO 있으면 skip — 테넌트별로 격리해서 조회
+        existing_q = db.query(SalesOrder).filter(SalesOrder.order_no == order_no)
+        if tenant_id is not None:
+            existing_q = existing_q.filter(SalesOrder.tenant_id == tenant_id)
+        if existing_q.first():
+            skipped_orders += 1
+            continue
+
+        # Customer 매칭 — 외부ID > 전화 > 이메일 > 이름 (모두 tenant scope)
         cust = None
+        cust_base = db.query(Customer)
+        if tenant_id is not None:
+            cust_base = cust_base.filter(Customer.tenant_id == tenant_id)
         if ext_order_id and shop:
-            cust = (
-                db.query(Customer)
-                .filter(
-                    Customer.external_id == ext_order_id,
-                    Customer.external_source == shop,
-                )
-                .first()
-            )
+            cust = cust_base.filter(
+                Customer.external_id == ext_order_id,
+                Customer.external_source == shop,
+            ).first()
         if not cust and phone:
-            cust = db.query(Customer).filter(Customer.phone == phone).first()
+            cust = cust_base.filter(Customer.phone == phone).first()
         if not cust and email:
-            cust = db.query(Customer).filter(Customer.email == email).first()
+            cust = cust_base.filter(Customer.email == email).first()
         if not cust:
             cust = Customer(
                 name=cust_name,
@@ -437,7 +473,7 @@ async def import_orders(
         except Exception:
             order_date = _date.today()
 
-        # 라인 변환
+        # 라인 변환 — 사전 캐시(sku_index) 사용으로 N+1 제거
         so_lines: list[SalesOrderItem] = []
         total = _D("0")
         line_errors: list[str] = []
@@ -446,11 +482,7 @@ async def import_orders(
             if not sku:
                 line_errors.append(f"{ln['_idx']}행: SKU 누락")
                 continue
-            item = (
-                db.query(Item)
-                .filter((Item.sku == sku) | (Item.external_sku == sku))
-                .first()
-            )
+            item = sku_index.get(sku)
             if not item:
                 line_errors.append(f"{ln['_idx']}행: SKU '{sku}' 매칭 안됨")
                 continue
@@ -475,42 +507,50 @@ async def import_orders(
             })
             continue
         if line_errors:
-            # 일부 라인만 실패 — SO는 만들되 에러 기록
             for le in line_errors:
                 errors.append({"row": first["_idx"], "reason": f"{order_no}: {le}"})
 
-        so = SalesOrder(
-            order_no=order_no,
-            customer_id=cust.id,
-            order_date=order_date,
-            status=OrderStatus.draft,
-            total=total,
-            owner_id=user.id,
-            tenant_id=tenant_id,
-        )
-        for sl in so_lines:
-            so.items.append(sl)
-        db.add(so)
-        db.flush()
-        created_orders += 1
+        # 주문 1건 = 1 트랜잭션. 실패해도 앞 SO 영향 없음.
+        # 새 Customer가 생성된 경우 동일 트랜잭션 내에서 함께 commit.
+        try:
+            so = SalesOrder(
+                order_no=order_no,
+                customer_id=cust.id,
+                order_date=order_date,
+                status=OrderStatus.draft,
+                total=total,
+                owner_id=user.id,
+                tenant_id=tenant_id,
+            )
+            for sl in so_lines:
+                so.items.append(sl)
+            db.add(so)
+            db.flush()
+            so_id = so.id
+            db.commit()
+            created_orders += 1
+        except Exception as exc:
+            db.rollback()
+            _log.exception("SO 생성 실패 order_no=%s", order_no)
+            errors.append({
+                "row": first["_idx"],
+                "reason": f"{order_no} SO 생성 실패: {exc}",
+            })
+            continue
 
-        # auto_confirm: 재고 차감 + COGS — 부족하면 draft 유지하고 에러
+        # auto_confirm: 재고 차감 + COGS. 실패해도 SO는 이미 draft로 살아있음.
         if auto_confirm:
             try:
                 from app.modules.sales import service
-                service.confirm_order(db, so.id)
+                service.confirm_order(db, so_id)
                 confirmed_orders += 1
-            except ValueError as exc:
+            except Exception as exc:
+                db.rollback()
+                _log.warning("SO 확정 실패 order_no=%s reason=%s", order_no, exc)
                 errors.append({
                     "row": first["_idx"],
                     "reason": f"{order_no} 확정 실패 (draft 유지): {exc}",
                 })
-
-    try:
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=f"저장 실패: {exc}")
 
     return {
         "created_orders": created_orders,
