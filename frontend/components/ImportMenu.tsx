@@ -46,16 +46,19 @@ export default function ImportMenu({
           `${importEndpoint}${sep}upsert=true`,
           f
         );
-        const errMsg =
-          res.errors.length > 0
-            ? `\n실패 ${res.errors.length}건:\n` +
-              res.errors
-                .slice(0, 10)
-                .map((e) => `  ${e.row}행: ${e.reason}`)
-                .join("\n")
-            : "";
+        // 결과 alert + 에러 50건까지 표시 (이상은 "외 N건")
+        const errCount = res.errors.length;
+        let errMsg = "";
+        if (errCount > 0) {
+          const shown = res.errors.slice(0, 50);
+          const overflow = errCount - shown.length;
+          errMsg =
+            `\n\n실패 ${errCount}건:\n` +
+            shown.map((e) => `  ${e.row}행: ${e.reason}`).join("\n");
+          if (overflow > 0) errMsg += `\n  ...외 ${overflow}건`;
+        }
         alert(
-          `완료\n신규 ${res.created} · 갱신 ${res.updated} · 건너뜀 ${res.skipped} (총 ${res.total_rows}행)${errMsg}`
+          `[완료]\n신규 ${res.created} · 갱신 ${res.updated} · 건너뜀 ${res.skipped} (총 ${res.total_rows}행)${errMsg}`
         );
         onComplete?.();
       } catch (e) {

@@ -832,6 +832,53 @@ def test_suppliers_import_csv(client, db_session, admin_auth):
 # ────── 7. 출고 → 청구서 자동 draft ──────────────────────────────
 
 
+def test_generate_invoice_rejects_zero_total(client, db_session, admin_auth):
+    """0원 invoice는 거부 (단가 미설정 출고)."""
+    from app.modules.inventory.models import Item
+    from app.modules.sales.models import (
+        Customer, OrderStatus, SalesOrder, SalesOrderItem,
+    )
+    from app.modules.wms.models import (
+        PickList, PickListItem, PickStatus, Shipment,
+    )
+
+    # 회사정보
+    client.put(
+        "/api/company-profile",
+        json={
+            "business_no": "206-87-06151",
+            "company_name": "X", "representative": "Y", "address": "Z",
+        },
+        headers=admin_auth["headers"],
+    )
+
+    cust = Customer(name="zero_cust")
+    db_session.add(cust)
+    item = Item(sku="ZERO", name="단가0", unit_price=Decimal("0"))
+    db_session.add(item)
+    db_session.flush()
+    so = SalesOrder(order_no="SO-Z", customer_id=cust.id, status=OrderStatus.confirmed)
+    so.items.append(SalesOrderItem(item_id=item.id, quantity=Decimal("5"), unit_price=Decimal("0")))
+    db_session.add(so)
+    db_session.flush()
+    pl = PickList(pick_no="PL-Z", sales_order_id=so.id, status=PickStatus.picked)
+    pl.items.append(PickListItem(item_id=item.id, requested_qty=Decimal("5"), picked_qty=Decimal("5")))
+    db_session.add(pl)
+    db_session.flush()
+    s = Shipment(shipment_no="SHP-Z", pick_list_id=pl.id, sales_order_id=so.id)
+    db_session.add(s)
+    db_session.commit()
+
+    res = client.post(
+        f"/api/wms/shipments/{s.id}/generate-invoice",
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 400
+    body = res.json()
+    msg = body.get("error", {}).get("message") or body.get("detail", "")
+    assert "0원" in msg or "단가" in msg
+
+
 def test_generate_invoice_from_shipment(client, db_session, admin_auth):
     """출고 1건 → Invoice draft 자동 생성, 멱등성 검증."""
     from app.modules.billing.models import Invoice, InvoiceStatus
@@ -877,8 +924,10 @@ def _make_png_bytes() -> bytes:
     )
 
 
-def test_company_logo_upload_and_get(client, admin_auth):
-    """로고 업로드 → GET으로 동일 바이트 반환."""
+def test_company_logo_upload_and_get(client, db_session, admin_auth):
+    """로고 업로드 → DB BLOB 저장 + GET으로 동일 바이트 반환."""
+    from app.modules.company.models import CompanyProfile
+
     # 회사정보 먼저
     client.put(
         "/api/company-profile",
@@ -898,10 +947,40 @@ def test_company_logo_upload_and_get(client, admin_auth):
     )
     assert res.status_code == 200, res.text
     assert res.json()["ok"] is True
+    assert res.json()["size_bytes"] == len(png)
+
+    # DB에 BLOB 저장 검증 (/tmp 아님)
+    db_session.expire_all()
+    cp = db_session.query(CompanyProfile).first()
+    assert cp.logo_bytes == png
+    assert cp.logo_mimetype == "image/png"
 
     res = client.get("/api/company-profile/logo", headers=admin_auth["headers"])
     assert res.status_code == 200
-    assert res.content[:8] == b"\x89PNG\r\n\x1a\n"  # PNG 시그니처
+    assert res.content == png
+    assert res.headers["content-type"] == "image/png"
+
+
+def test_company_logo_rejects_bad_png_header(client, admin_auth):
+    """content-type 위조해도 헤더 시그니처로 거부."""
+    client.put(
+        "/api/company-profile",
+        json={
+            "business_no": "206-87-06151",
+            "company_name": "X",
+            "representative": "Y",
+            "address": "Z",
+        },
+        headers=admin_auth["headers"],
+    )
+    res = client.post(
+        "/api/company-profile/upload-logo",
+        # content-type만 png로 위조하고 실제 바이트는 텍스트
+        files={"file": ("fake.png", b"NOT_A_PNG", "image/png")},
+        headers=admin_auth["headers"],
+    )
+    assert res.status_code == 400
+    assert "PNG" in str(res.json())
 
 
 def test_company_stamp_upload_rejects_non_image(client, admin_auth):

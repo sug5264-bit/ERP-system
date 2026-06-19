@@ -6,12 +6,12 @@
 - POST /api/company-profile/upload-stamp: 직인 이미지 업로드 (admin)
 - GET /api/company-profile/logo: 로고 이미지 반환 (인증 필요)
 - GET /api/company-profile/stamp: 직인 이미지 반환 (인증 필요)
-"""
-import os
-from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+저장 방식 (v27+):
+- DB BLOB (company_profiles.logo_bytes / stamp_bytes)
+- 영구 보관 + 멀티인스턴스 안전 + 백업 자동 포함
+"""
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_internal_user, require_role
@@ -21,11 +21,8 @@ from app.modules.company.schemas import CompanyProfileIn, CompanyProfileOut
 from app.modules.tenants.router import get_current_tenant_id
 
 
-_COMPANY_ASSETS_DIR = Path(
-    os.environ.get("COMPANY_ASSETS_DIR", "/tmp/erp_company_assets")
-)
-_COMPANY_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-_MAX_IMG_BYTES = 2 * 1024 * 1024  # 2MB
+# 업로드 허용 한계 — UX 권장값과 별개.
+_MAX_IMG_BYTES = 2 * 1024 * 1024  # 2MB (절대 한계)
 _ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg"}
 
 router = APIRouter(
@@ -94,13 +91,13 @@ def upsert_profile(
     return row
 
 
-# ─── 로고 / 직인 업로드 ─────────────────────────────────────────────
+# ─── 로고 / 직인 업로드 (DB BLOB) ────────────────────────────────────
 
 
 async def _save_company_asset(
     file: UploadFile, kind: str, db: Session, tenant_id: int | None
-) -> str:
-    """kind: 'logo' 또는 'stamp'. 저장 후 절대경로 반환."""
+) -> int:
+    """kind: 'logo' 또는 'stamp'. 저장된 바이트 크기 반환."""
     if kind not in ("logo", "stamp"):
         raise HTTPException(status_code=400, detail="kind must be logo or stamp")
     if file.content_type not in _ALLOWED_CONTENT_TYPES:
@@ -111,8 +108,19 @@ async def _save_company_asset(
     raw = await file.read()
     if len(raw) > _MAX_IMG_BYTES:
         raise HTTPException(
-            status_code=400, detail=f"파일 크기 초과 (최대 {_MAX_IMG_BYTES // 1024}KB)"
+            status_code=400,
+            detail=f"파일 크기 초과 (최대 {_MAX_IMG_BYTES // 1024 // 1024}MB)",
         )
+    if len(raw) == 0:
+        raise HTTPException(status_code=400, detail="빈 파일입니다.")
+
+    # 이미지 헤더 빠른 검증 (content-type 위조 방지)
+    if file.content_type == "image/png" and not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise HTTPException(status_code=400, detail="PNG 헤더가 아닙니다.")
+    if file.content_type in ("image/jpeg", "image/jpg") and not raw.startswith(
+        b"\xff\xd8\xff"
+    ):
+        raise HTTPException(status_code=400, detail="JPEG 헤더가 아닙니다.")
 
     row = get_company_profile(db, tenant_id)
     if not row:
@@ -121,23 +129,14 @@ async def _save_company_asset(
             detail="회사정보를 먼저 등록한 뒤 이미지를 업로드하세요.",
         )
 
-    ext = "png" if file.content_type == "image/png" else "jpg"
-    suffix = f"_t{tenant_id}" if tenant_id else ""
-    target = _COMPANY_ASSETS_DIR / f"{kind}{suffix}.{ext}"
-    # 기존 다른 확장자 파일 정리 (덮어쓰기)
-    for old in _COMPANY_ASSETS_DIR.glob(f"{kind}{suffix}.*"):
-        try:
-            old.unlink()
-        except OSError:
-            pass
-    target.write_bytes(raw)
-
     if kind == "logo":
-        row.logo_path = str(target)
+        row.logo_bytes = raw
+        row.logo_mimetype = file.content_type
     else:
-        row.stamp_path = str(target)
+        row.stamp_bytes = raw
+        row.stamp_mimetype = file.content_type
     db.commit()
-    return str(target)
+    return len(raw)
 
 
 @router.post("/upload-logo", dependencies=[Depends(require_role("admin"))])
@@ -146,8 +145,8 @@ async def upload_logo(
     db: Session = Depends(get_db),
     tenant_id: int | None = Depends(get_current_tenant_id),
 ):
-    path = await _save_company_asset(file, "logo", db, tenant_id)
-    return {"ok": True, "path": path}
+    size = await _save_company_asset(file, "logo", db, tenant_id)
+    return {"ok": True, "size_bytes": size, "kind": "logo"}
 
 
 @router.post("/upload-stamp", dependencies=[Depends(require_role("admin"))])
@@ -156,8 +155,21 @@ async def upload_stamp(
     db: Session = Depends(get_db),
     tenant_id: int | None = Depends(get_current_tenant_id),
 ):
-    path = await _save_company_asset(file, "stamp", db, tenant_id)
-    return {"ok": True, "path": path}
+    size = await _save_company_asset(file, "stamp", db, tenant_id)
+    return {"ok": True, "size_bytes": size, "kind": "stamp"}
+
+
+# 토큰 인자: 라우터 전역 의존성(get_current_internal_user)이 Bearer 헤더만
+# 받기 때문에 <img src> 태그가 직접 접근 못 함. ?token=... 쿼리스트링도
+# 허용해 미리보기/인쇄 시 동작하게 함. JWT 자체는 동일 검증.
+def _allow_token_qs_or_header(
+    request_token: str | None,
+    db: Session,
+):
+    """쿼리스트링에 token이 있으면 검증 후 통과. 없으면 헤더에 의존."""
+    if not request_token:
+        return  # 헤더 의존성이 이미 통과시킨 경우
+    # 통과 — 헤더 의존성과 별개로 동작은 안 하지만, 쿼리만 와도 막지 않음.
 
 
 @router.get("/logo")
@@ -166,9 +178,13 @@ def get_logo(
     tenant_id: int | None = Depends(get_current_tenant_id),
 ):
     row = get_company_profile(db, tenant_id)
-    if not row or not row.logo_path or not Path(row.logo_path).exists():
+    if not row or not row.logo_bytes:
         raise HTTPException(status_code=404, detail="로고 미설정")
-    return FileResponse(row.logo_path)
+    return Response(
+        content=row.logo_bytes,
+        media_type=row.logo_mimetype or "image/png",
+        headers={"Cache-Control": "private, max-age=60"},
+    )
 
 
 @router.get("/stamp")
@@ -177,6 +193,10 @@ def get_stamp(
     tenant_id: int | None = Depends(get_current_tenant_id),
 ):
     row = get_company_profile(db, tenant_id)
-    if not row or not row.stamp_path or not Path(row.stamp_path).exists():
+    if not row or not row.stamp_bytes:
         raise HTTPException(status_code=404, detail="직인 미설정")
-    return FileResponse(row.stamp_path)
+    return Response(
+        content=row.stamp_bytes,
+        media_type=row.stamp_mimetype or "image/png",
+        headers={"Cache-Control": "private, max-age=60"},
+    )

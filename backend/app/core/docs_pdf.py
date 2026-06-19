@@ -65,8 +65,10 @@ class PartyInfo:
     business_item: str | None = None
     phone: str | None = None
     fax: str | None = None
-    logo_path: str | None = None   # 자사 로고 (헤더 좌상단)
-    stamp_path: str | None = None  # 직인 (인수란 배경)
+    logo_path: str | None = None   # (deprecated) 파일경로 — 호환용
+    stamp_path: str | None = None  # (deprecated) 파일경로 — 호환용
+    logo_bytes: bytes | None = None   # 자사 로고 (헤더 좌상단)
+    stamp_bytes: bytes | None = None  # 직인 (공급자 박스 옆)
 
 
 @dataclass
@@ -86,6 +88,33 @@ class LineItem:
 
 
 # ──── 유틸 ───────────────────────────────────────────────────────────
+def _safe_image(
+    blob: bytes | None, path: str | None, size: float
+) -> Image | None:
+    """이미지를 reportlab Image로 안전 변환.
+
+    우선순위: blob > path. 실패하면 None (양식은 이미지 없이 계속 빌드).
+    """
+    if blob:
+        try:
+            return Image(
+                io.BytesIO(blob),
+                width=size,
+                height=size,
+                kind="proportional",
+            )
+        except Exception:
+            return None
+    if path:
+        try:
+            import os as _os
+            if _os.path.exists(path):
+                return Image(path, width=size, height=size, kind="proportional")
+        except Exception:
+            return None
+    return None
+
+
 def _fmt_money(v: Decimal | int | float | None) -> str:
     if v is None:
         return ""
@@ -566,15 +595,16 @@ def _txn_header_block(
     # 우측 셀 = "공급자" 세로 글자 + sup_inner (+ 직인 오버레이 옵션)
     cols = [[_para("공\n급\n자", size=10, align="CENTER", bold=True), sup_inner]]
     widths = [7 * mm, 102 * mm]
-    if company.stamp_path:
-        try:
-            import os
-            if os.path.exists(company.stamp_path):
-                stamp = Image(company.stamp_path, width=18 * mm, height=18 * mm, kind="proportional")
-                cols = [[_para("공\n급\n자", size=10, align="CENTER", bold=True), sup_inner, stamp]]
-                widths = [7 * mm, 84 * mm, 18 * mm]
-        except Exception:
-            pass
+    stamp_image = _safe_image(company.stamp_bytes, company.stamp_path, 18 * mm)
+    if stamp_image is not None:
+        cols = [
+            [
+                _para("공\n급\n자", size=10, align="CENTER", bold=True),
+                sup_inner,
+                stamp_image,
+            ]
+        ]
+        widths = [7 * mm, 84 * mm, 18 * mm]
     right_block = Table(cols, colWidths=widths)
     right_block.setStyle(
         TableStyle(
@@ -598,26 +628,20 @@ def _txn_header_block(
         ParagraphStyle("t", fontName=_FONT, alignment=1, leading=24),
     )
     left_title = title_para
-    if company.logo_path:
-        try:
-            import os
-            if os.path.exists(company.logo_path):
-                logo = Image(company.logo_path, width=14 * mm, height=14 * mm, kind="proportional")
-                lt = Table([[logo, title_para]], colWidths=[16 * mm, 55 * mm])
-                lt.setStyle(
-                    TableStyle(
-                        [
-                            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                            ("ALIGN", (0, 0), (0, 0), "CENTER"),
-                            ("LEFTPADDING", (0, 0), (-1, -1), 1),
-                            ("RIGHTPADDING", (0, 0), (-1, -1), 1),
-                        ]
-                    )
-                )
-                left_title = lt
-        except Exception:
-            # 손상된 이미지여도 빌드는 계속
-            pass
+    logo_image = _safe_image(company.logo_bytes, company.logo_path, 14 * mm)
+    if logo_image is not None:
+        lt = Table([[logo_image, title_para]], colWidths=[16 * mm, 55 * mm])
+        lt.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (0, 0), (0, 0), "CENTER"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 1),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 1),
+                ]
+            )
+        )
+        left_title = lt
     cust_box = Table(
         [
             [_para(f"{customer.company_name}  貴 中", size=11, align="CENTER", bold=True)],

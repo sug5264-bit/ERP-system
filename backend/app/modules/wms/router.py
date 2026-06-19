@@ -458,7 +458,9 @@ def _resolve_company_and_customer(db: Session, shipment: Shipment):
         business_item=cp.business_item,
         phone=cp.phone,
         fax=cp.fax,
-        logo_path=cp.logo_path,
+        logo_bytes=cp.logo_bytes,
+        stamp_bytes=cp.stamp_bytes,
+        logo_path=cp.logo_path,    # deprecated fallback
         stamp_path=cp.stamp_path,
     )
     if not cust:
@@ -706,9 +708,19 @@ def generate_invoice_from_shipment(
                 line_total=line_total,
             )
         )
+    # 빈 invoice(라인 0건 또는 0원) 거부 — 운영자가 잘못 누른 결과 방지
+    if not inv.items:
+        raise HTTPException(
+            status_code=400,
+            detail="출고된 수량이 0이거나 단가 미설정 — 청구서 생성 불가",
+        )
     inv.subtotal = subtotal
     inv.tax = (subtotal * Decimal(tax_rate)).quantize(Decimal("0.01"))
     inv.total = inv.subtotal + inv.tax
+    if inv.total <= 0:
+        raise HTTPException(
+            status_code=400, detail="청구 금액이 0원 — 단가를 확인하세요."
+        )
     db.add(inv)
     db.commit()
     db.refresh(inv)

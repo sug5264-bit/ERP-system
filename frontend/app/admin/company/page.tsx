@@ -1,7 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
+// useEffect는 ImageUpload 컴포넌트에서 사용
 import AppShell from "@/components/AppShell";
 import { api, uploadFile } from "@/lib/api";
+import { formatBizNo, isValidBizNo, normalizeBizNo } from "@/lib/biz-no";
 
 type CompanyProfile = {
   id?: number;
@@ -100,12 +102,9 @@ export default function CompanyProfilePage() {
 
         <form onSubmit={save} className="space-y-4">
           <Section title="사업자등록증 항목">
-            <Field
-              label="사업자등록번호 *"
-              placeholder="123-45-67890"
+            <BizNoField
               value={profile.business_no}
-              onChange={onChange("business_no")}
-              required
+              onChange={(v) => setProfile({ ...profile, business_no: v })}
             />
             <Field
               label="법인등록번호"
@@ -188,17 +187,19 @@ export default function CompanyProfilePage() {
 
           <Section title="로고 / 직인 (PDF 양식에 자동 합성)">
             <ImageUpload
-              label="로고"
+              label="로고 (헤더 좌상단에 표시)"
               endpoint="/api/company-profile/upload-logo"
               previewUrl="/api/company-profile/logo"
-              onDone={() => setMessage("로고 업로드 완료")}
+              recommendedSpec="권장: 정사각형 또는 가로형 · 600×600px 이상 · PNG(투명배경 권장) 또는 JPG · 2MB 이하"
+              onDone={() => setMessage("로고 업로드 완료 — 다음 PDF 출력부터 자동 반영")}
               onError={(e) => setError(e)}
             />
             <ImageUpload
-              label="직인"
+              label="직인 (공급자 박스 옆에 표시)"
               endpoint="/api/company-profile/upload-stamp"
               previewUrl="/api/company-profile/stamp"
-              onDone={() => setMessage("직인 업로드 완료")}
+              recommendedSpec="권장: 정사각형 · 400×400px 이상 · PNG(투명배경) · 빨간색 인감 스캔본 권장 · 2MB 이하"
+              onDone={() => setMessage("직인 업로드 완료 — 다음 PDF 출력부터 자동 반영")}
               onError={(e) => setError(e)}
             />
           </Section>
@@ -250,21 +251,111 @@ function Field({
   );
 }
 
+function BizNoField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const normalized = normalizeBizNo(value);
+  // 검증은 10자리 전부 입력했을 때만. 입력 중에는 중립.
+  const filled = normalized.length === 10;
+  const valid = filled && isValidBizNo(value);
+  const status =
+    !filled ? "neutral" : valid ? "ok" : "bad";
+
+  return (
+    <label className="block text-sm">
+      <span className="text-gray-700">사업자등록번호 *</span>
+      <input
+        type="text"
+        required
+        placeholder="123-45-67890"
+        value={value}
+        onChange={(e) => {
+          // 10자리 다 들어왔으면 자동 하이픈
+          const d = normalizeBizNo(e.target.value);
+          onChange(d.length === 10 ? formatBizNo(d) : e.target.value);
+        }}
+        onBlur={() => {
+          if (filled && valid) onChange(formatBizNo(value));
+        }}
+        className={`mt-1 block w-full rounded shadow-sm px-3 py-2 border ${
+          status === "bad"
+            ? "border-red-400 focus:border-red-500 focus:ring-red-500"
+            : status === "ok"
+            ? "border-emerald-400 focus:border-emerald-500 focus:ring-emerald-500"
+            : "border-gray-300 focus:border-brand-500 focus:ring-brand-500"
+        }`}
+      />
+      {status === "bad" && (
+        <div className="text-xs text-red-600 mt-1">
+          체크섬 오류 — 입력 번호를 확인하세요
+        </div>
+      )}
+      {status === "ok" && (
+        <div className="text-xs text-emerald-700 mt-1">✓ 유효</div>
+      )}
+    </label>
+  );
+}
+
 function ImageUpload({
   label,
   endpoint,
   previewUrl,
+  recommendedSpec,
   onDone,
   onError,
 }: {
   label: string;
   endpoint: string;
   previewUrl: string;
+  recommendedSpec: string;
   onDone: () => void;
   onError: (s: string) => void;
 }) {
-  const [previewKey, setPreviewKey] = useState(0);
   const [busy, setBusy] = useState(false);
+  // blob: URL — Bearer 토큰을 직접 부착하기 위해 fetch + createObjectURL 사용.
+  // <img src="/api/..."> 직접 호출은 헤더가 안 붙어 401 발생.
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+
+  const loadPreview = async () => {
+    try {
+      const { getToken } = await import("@/lib/api");
+      const token = getToken();
+      const tenant =
+        typeof window !== "undefined"
+          ? localStorage.getItem("erp_tenant_id")
+          : null;
+      const h: Record<string, string> = {};
+      if (token) h["Authorization"] = `Bearer ${token}`;
+      if (tenant) h["X-Tenant-ID"] = tenant;
+      const res = await fetch(previewUrl, { headers: h });
+      if (!res.ok) {
+        setBlobUrl(null);
+        return;
+      }
+      const blob = await res.blob();
+      // 이전 URL 회수
+      setBlobUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return URL.createObjectURL(blob);
+      });
+    } catch {
+      setBlobUrl(null);
+    }
+  };
+
+  useEffect(() => {
+    loadPreview();
+    // cleanup
+    return () => {
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const pick = () => {
     const input = document.createElement("input");
@@ -273,10 +364,19 @@ function ImageUpload({
     input.onchange = async () => {
       const f = input.files?.[0];
       if (!f) return;
+      // 클라이언트 사전 검증
+      if (f.size > 2 * 1024 * 1024) {
+        onError("파일이 2MB를 초과합니다.");
+        return;
+      }
+      if (!["image/png", "image/jpeg"].includes(f.type)) {
+        onError("PNG 또는 JPG만 업로드 가능합니다.");
+        return;
+      }
       setBusy(true);
       try {
         await uploadFile(endpoint, f);
-        setPreviewKey((k) => k + 1);
+        await loadPreview();
         onDone();
       } catch (e) {
         onError(String(e));
@@ -288,31 +388,35 @@ function ImageUpload({
   };
 
   return (
-    <div className="block text-sm">
-      <div className="text-gray-700 mb-2">{label}</div>
+    <div className="block text-sm md:col-span-2">
+      <div className="text-gray-700 mb-2 font-medium">{label}</div>
+      <div className="text-xs text-gray-500 mb-2">{recommendedSpec}</div>
       <div className="flex gap-3 items-center">
-        <div
-          className="w-24 h-24 border rounded bg-gray-50 flex items-center justify-center overflow-hidden"
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            key={previewKey}
-            src={`${previewUrl}?v=${previewKey}`}
-            alt={label}
-            className="max-w-full max-h-full object-contain"
-            onError={(e) => {
-              (e.currentTarget as HTMLImageElement).style.display = "none";
-            }}
-          />
+        <div className="w-28 h-28 border rounded bg-gray-50 flex items-center justify-center overflow-hidden">
+          {blobUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={blobUrl}
+              alt={label}
+              className="max-w-full max-h-full object-contain"
+            />
+          ) : (
+            <span className="text-xs text-gray-400">미설정</span>
+          )}
         </div>
-        <button
-          type="button"
-          onClick={pick}
-          disabled={busy}
-          className="px-3 py-1 rounded border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50"
-        >
-          {busy ? "업로드 중..." : "이미지 선택 (PNG/JPG, 2MB↓)"}
-        </button>
+        <div className="flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={pick}
+            disabled={busy}
+            className="px-3 py-1 rounded border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50"
+          >
+            {busy ? "업로드 중..." : "이미지 선택"}
+          </button>
+          {blobUrl && (
+            <div className="text-xs text-emerald-700">✓ 등록됨</div>
+          )}
+        </div>
       </div>
     </div>
   );

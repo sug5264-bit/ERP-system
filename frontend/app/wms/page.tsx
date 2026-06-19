@@ -360,13 +360,15 @@ function ShipTab({
                       `/api/wms/shipments/${r.id}/generate-invoice`,
                       { method: "POST" }
                     )
-                      .then((d) =>
-                        alert(
-                          d.already_exists
-                            ? `이미 생성된 청구서: ${d.invoice_no}`
-                            : `청구서 draft 생성: ${d.invoice_no} (Billing 메뉴에서 발행)`
-                        )
-                      )
+                      .then((d) => {
+                        const goBilling = confirm(
+                          (d.already_exists
+                            ? `이미 생성된 청구서: ${d.invoice_no}\n\n`
+                            : `청구서 draft 생성됨: ${d.invoice_no}\n\n`) +
+                            "Billing 페이지로 이동해서 발행할까요?"
+                        );
+                        if (goBilling) window.location.href = "/billing";
+                      })
                       .catch((e) => onError(String(e)))
                   }
                   className="text-blue-700 hover:underline"
